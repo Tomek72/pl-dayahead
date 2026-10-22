@@ -1,31 +1,28 @@
-from datetime import date
-
 import pandas as pd
 
-from pl_dayahead.holidays_pl import easter_sunday, is_holiday, public_holidays
+from pl_dayahead.holidays_pl import is_holiday
 
 
-def test_easter_dates():
-    assert easter_sunday(2023) == date(2023, 4, 9)
-    assert easter_sunday(2024) == date(2024, 3, 31)
-    assert easter_sunday(2025) == date(2025, 4, 20)
-    assert easter_sunday(2026) == date(2026, 4, 5)
+def holiday(day: str) -> bool:
+    return bool(is_holiday(pd.Series(pd.to_datetime([day]))).iloc[0])
 
 
-def test_moveable_holidays_follow_easter():
-    days = public_holidays(2026)
-    assert days[date(2026, 4, 6)] == "Easter Monday"
-    assert days[date(2026, 5, 24)] == "Pentecost Sunday"
-    assert days[date(2026, 6, 4)] == "Corpus Christi"
+def test_fixed_date_holidays():
+    assert holiday("2026-01-01") and holiday("2026-05-03") and holiday("2026-11-11")
+    assert not holiday("2026-01-07")
 
 
-def test_christmas_eve_from_2025_only():
-    assert date(2024, 12, 24) not in public_holidays(2024)
-    assert date(2025, 12, 24) in public_holidays(2025)
-    assert len(public_holidays(2024)) == 13
-    assert len(public_holidays(2025)) == 14
+def test_holidays_that_follow_easter():
+    assert holiday("2026-04-06")  # Easter Monday
+    assert holiday("2026-06-04")  # Corpus Christi
+    assert not holiday("2026-04-07")
 
 
-def test_is_holiday_on_delivery_days():
-    days = pd.Series(pd.to_datetime(["2026-01-01", "2026-01-06", "2026-01-07", "2026-11-11"]))
-    assert list(is_holiday(days)) == [True, True, False, True]
+def test_christmas_eve_is_a_holiday_from_2025_only():
+    assert not holiday("2024-12-24")
+    assert holiday("2025-12-24")
+
+
+def test_a_series_spanning_two_years():
+    days = pd.Series(pd.to_datetime(["2025-12-24", "2025-12-27", "2026-01-01", "2026-01-06"]))
+    assert list(is_holiday(days)) == [True, False, True, True]
