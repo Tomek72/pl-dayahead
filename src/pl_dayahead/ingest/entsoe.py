@@ -1,15 +1,12 @@
-"""Download ENTSO-E data for Poland into raw_entsoe, one calendar month per request.
+"""Download Polish prices, load forecasts and wind and solar forecasts from ENTSO-E, one month at a time.
 
-Run from the project root:
+Run from the project root (add --help to see the options):
 
     uv run python -m pl_dayahead.ingest.entsoe
-    uv run python -m pl_dayahead.ingest.entsoe --start 2025-09-01 --end 2025-11-01 --refresh
 
-Each month is checked before it is stored: timestamps are converted to UTC and
-trimmed to the month, duplicates and gaps are counted, and the resolution of each
-series is recorded. Every attempt, including failures, is written to ingest_log.
-
-notes: explain more about the data here
+Each month is checked before it is stored: times are converted to UTC, rows outside the month are
+dropped, exact duplicates are removed, and the minutes each row covers are recorded. The month then
+replaces any earlier download of the same month in entsoe_latest.
 """
 
 from __future__ import annotations
@@ -26,13 +23,10 @@ from pl_dayahead import store
 from pl_dayahead.config import BIDDING_ZONE, START_DATE, entsoe_token
 from pl_dayahead.timeutils import LOCAL_TZ, delivery_day_bounds, ensure_utc
 
-SOURCE = "entsoe"
-SETTLE = pd.Timedelta(days=7)  # a month downloaded this long after it ended is final
 PAUSE_S = 0.5  # between requests; the API bans you for 10 minutes above 400 per minute
 ALLOWED_RESOLUTIONS = {15, 30, 60}
 
-# entsoe-py column names -> our series names. Unknown columns are slugified, so a new
-# category in the feed is stored under a new name instead of breaking the run.
+# entsoe-py column names -> our series names.
 COLUMN_NAMES = {
     "Forecasted Load": "load_da_fcst",
     "Solar": "solar_da_fcst",
@@ -45,21 +39,18 @@ COLUMN_NAMES = {
 
 
 def _prices(client, start: pd.Timestamp, end: pd.Timestamp):
-    # entsoe-py returns the resolution the market cleared in: hourly before
-    # 1 October 2025, 15-minute from then on.
+    """Download day-ahead prices: hourly until 30 September 2025, every 15 minutes from 1 October 2025."""
     return client.query_day_ahead_prices(BIDDING_ZONE, start=start, end=end)
 
 
 def _load_forecast(client, start: pd.Timestamp, end: pd.Timestamp):
-    # process_type A01 is the day-ahead forecast.
+    """Download the day-ahead load forecast (process type A01)."""
     return client.query_load_forecast(BIDDING_ZONE, start=start, end=end, process_type="A01")
 
 
 def _wind_solar_forecast(client, start: pd.Timestamp, end: pd.Timestamp):
-    # A01 is the day-ahead version, not the "current" forecast that keeps updating.
-    return client.query_wind_and_solar_forecast(
-        BIDDING_ZONE, start=start, end=end, process_type="A01"
-    )
+    """Download the day-ahead wind and solar forecast (process type A01, not the intraday updates)."""
+    return client.query_wind_and_solar_forecast(BIDDING_ZONE, start=start, end=end, process_type="A01")
 
 
 QUERIES = {
@@ -69,11 +60,11 @@ QUERIES = {
 }
 
 
-# --- pure helpers (tested without network) -----------------------------------------
+# --- helpers (tested without network) -----------------------------------------------
 
 
 def month_chunks(start: date, end: date) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """UTC [start, end) per Warsaw calendar month, covering delivery days start to end - 1."""
+    """Split the days from `start` up to the day before `end` into calendar months, each given as a UTC start and end."""
     chunks = []
     first = start.replace(day=1)
     while first < end:
@@ -85,20 +76,18 @@ def month_chunks(start: date, end: date) -> list[tuple[pd.Timestamp, pd.Timestam
 
 
 def series_name(column) -> str:
+    """Return the name a downloaded column is stored under, such as "load_da_fcst". An unknown column gets a name made from its title."""
     if column in COLUMN_NAMES:
         return COLUMN_NAMES[column]
     return re.sub(r"[^a-z0-9]+", "_", str(column).lower()).strip("_") + "_da_fcst"
 
 
 def row_resolution(ts: pd.Series) -> pd.Series | None:
-    """Minutes covered by each row, read from the spacing to its neighbours.
+    """Work out how many minutes each row covers (15, 30 or 60) from the gaps to its neighbouring rows.
 
-    A row's resolution is the smaller of the gaps to the previous and the next row,
-    counting only gaps that are a valid resolution. A 15-minute row beside a missing
-    stretch therefore stays 15-minute, and a row with hourly spacing on both sides is
-    hourly. This works when a source changes resolution in the middle of a month, as the
-    Polish forecasts did at 00:00 UTC on 13 June 2024. Returns None if no spacing in the
-    series is a valid resolution.
+    Each row gets the smaller of the gaps to the row before and the row after, counting only gaps of
+    15, 30 or 60 minutes. This handles a series that switches from hourly to 15-minute values within a
+    month, as the Polish forecasts did on 13 June 2024. Returns None if no gap has a valid length.
     """
     minute = pd.Timedelta(minutes=1)
     before = ts.diff() / minute
@@ -116,15 +105,13 @@ def to_long(
     chunk_start: pd.Timestamp,
     chunk_end: pd.Timestamp,
     retrieved_at: pd.Timestamp,
-) -> tuple[pd.DataFrame, dict]:
-    """Turn one entsoe-py response into checked long-format rows for raw_entsoe.
+) -> tuple[pd.DataFrame, list[str]]:
+    """Turn one month of downloaded data into rows for entsoe_latest: one row per series and time.
 
-    Exact duplicates are dropped and counted. A series with two different values for
-    the same interval is not stored at all and is reported as a conflict, because
-    picking one of them silently would hide a data problem.
-
-    n_missing counts quarter-hours of the chunk that no row covers, so it means the
-    same thing for hourly and 15-minute data.
+    Each row holds the value, the minutes it covers and the download time. Exact duplicates are
+    dropped. If a series still has two values for the same time, none of that series is stored and a
+    message is returned for it, because silently picking one would hide a data problem. Returns the
+    rows and the list of such messages.
     """
     frame = raw.to_frame(default_name) if isinstance(raw, pd.Series) else raw.rename(columns=series_name)
     frame = frame.copy()
@@ -136,126 +123,85 @@ def to_long(
         .reset_index()
         .melt(id_vars="ts_utc", var_name="series", value_name="value")
         .dropna(subset=["value"])
+        .drop_duplicates()
     )
 
-    report = {"n_missing": 0, "n_duplicate": 0, "conflicts": []}
-    parts = []
+    conflicts, parts = [], []
     for name, grp in long.groupby("series", sort=True):
         grp = grp.sort_values("ts_utc")
-
-        repeated = grp["ts_utc"].duplicated(keep=False)
-        if repeated.any():
-            n_values = grp[repeated].groupby("ts_utc")["value"].nunique()
-            if (n_values > 1).any():
-                report["conflicts"].append(f"{name}: {int((n_values > 1).sum())} intervals with different values")
-                continue
-            report["n_duplicate"] += int(grp["ts_utc"].duplicated().sum())
-            grp = grp.drop_duplicates("ts_utc")
-
+        n_repeated = int(grp["ts_utc"].duplicated().sum())
+        if n_repeated:
+            conflicts.append(f"{name}: {n_repeated} timestamps with more than one value")
+            continue
         if len(grp) == 1:
             resolution = pd.Series(60, index=grp.index)
         else:
             resolution = row_resolution(grp["ts_utc"])
             if resolution is None:
-                report["conflicts"].append(f"{name}: no row spacing is a valid resolution")
+                conflicts.append(f"{name}: no gap between rows is 15, 30 or 60 minutes")
                 continue
-        grp = grp.assign(resolution_min=resolution)
-
-        # Every quarter-hour must be covered by some row: an hourly row covers four.
-        quarter = pd.Timedelta(minutes=15)
-        covered = pd.DatetimeIndex(
-            pd.concat(
-                [grp.loc[grp["resolution_min"] > 15 * k, "ts_utc"] + k * quarter
-                 for k in range(max(ALLOWED_RESOLUTIONS) // 15)]
-            )
-        )
-        # A month that has ended must be complete; the current month only up to its last value.
-        last = grp["ts_utc"].iloc[-1] + pd.Timedelta(minutes=int(grp["resolution_min"].iloc[-1]))
-        upper = chunk_end if chunk_end <= retrieved_at else min(chunk_end, last)
-        expected = pd.date_range(chunk_start, upper, freq=quarter, inclusive="left")
-        report["n_missing"] += len(expected.difference(covered))
-
-        parts.append(grp)
+        parts.append(grp.assign(resolution_min=resolution))
 
     rows = pd.concat(parts) if parts else long.iloc[0:0].assign(resolution_min=[])
-    rows = rows.assign(retrieved_at=retrieved_at)[store.RAW_COLUMNS].reset_index(drop=True)
-    return rows, report
+    rows = rows.assign(retrieved_at=retrieved_at)[store.COLUMNS].reset_index(drop=True)
+    return rows, conflicts
 
 
 # --- runner -------------------------------------------------------------------------
 
 
-def ingest(start: date, end: date, *, refresh: bool = False, only: list[str] | None = None) -> int:
-    """Download every query for every month in [start, end). Returns the number of failed chunks."""
+def ingest(start: date, end: date, only: list[str] | None = None) -> int:
+    """Download every series for every month from `start` up to the day before `end`, replacing earlier downloads of those months.
+
+    Returns the number of months that failed to download or had conflicting values.
+    """
     from entsoe import EntsoePandasClient
     from entsoe.exceptions import NoMatchingDataError
 
-    client = EntsoePandasClient(api_key=entsoe_token(), retry_count=3, retry_delay=10)
+    client = EntsoePandasClient(api_key=entsoe_token(), retry_count=3, retry_delay=10, timeout=60)  # give up on a request after 60 s instead of waiting forever
     con = store.connect()
     failures = 0
 
     for query in only or list(QUERIES):
         for lo, hi in month_chunks(start, end):
             month = lo.tz_convert(LOCAL_TZ).strftime("%Y-%m")
-            if not refresh and store.chunk_is_final(con, SOURCE, query, lo, hi, SETTLE):
-                print(f"{query:20s} {month}  final, skipped")
-                continue
-
             retrieved_at = pd.Timestamp.now(tz="UTC")
-            log = dict(source=SOURCE, query=query, chunk_start=lo, chunk_end=hi, retrieved_at=retrieved_at)
             try:
                 raw = QUERIES[query](client, lo, hi)
             except NoMatchingDataError:
-                store.log_chunk(con, **log, status="empty")
-                print(f"{query:20s} {month}  empty")
+                print(f"{query:20s} {month}  no data")
                 continue
-            except Exception as exc:  # logged and reported, the run continues
+            except Exception as exc:  # reported, and the run moves on to the next month
                 failures += 1
-                store.log_chunk(con, **log, status="error", message=f"{type(exc).__name__}: {exc}")
-                print(f"{query:20s} {month}  ERROR {type(exc).__name__}: {exc}")
+                message = re.sub(r"securityToken=[^&\s]+", "securityToken=HIDDEN", str(exc))  # never print the token
+                print(f"{query:20s} {month}  ERROR {type(exc).__name__}: {message}")
                 continue
             finally:
                 time.sleep(PAUSE_S)
 
-            rows, report = to_long(raw, query, lo, hi, retrieved_at)
-            n_rows = store.append_raw(con, rows)
-            if report["conflicts"]:
+            rows, conflicts = to_long(raw, query, lo, hi, retrieved_at)
+            n_rows = store.replace_month(con, rows, lo, hi)
+            if conflicts:
                 failures += 1
-                status = "conflict"
-            else:
-                status = "ok" if n_rows else "empty"
-            store.log_chunk(
-                con,
-                **log,
-                status=status,
-                n_rows=n_rows,
-                n_missing=report["n_missing"],
-                n_duplicate=report["n_duplicate"],
-                message="; ".join(report["conflicts"]) or None,
-            )
-            print(
-                f"{query:20s} {month}  {status:8s} rows={n_rows} "
-                f"missing={report['n_missing']} duplicates={report['n_duplicate']}"
-                + (f"  {'; '.join(report['conflicts'])}" if report["conflicts"] else "")
-            )
+            print(f"{query:20s} {month}  rows={n_rows}" + (f"  CONFLICT {'; '.join(conflicts)}" if conflicts else ""))
 
     con.close()
     return failures
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Read the command-line options and run the download."""
     today = date.today()
     next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
     parser = argparse.ArgumentParser(description="Download ENTSO-E data for Poland.")
     parser.add_argument("--start", type=date.fromisoformat, default=START_DATE, help="first delivery day")
     parser.add_argument("--end", type=date.fromisoformat, default=next_month, help="day after the last delivery day")
-    parser.add_argument("--refresh", action="store_true", help="download months already marked final")
     parser.add_argument("--only", nargs="+", choices=list(QUERIES), help="run only these queries")
     args = parser.parse_args(argv)
 
-    failures = ingest(args.start, args.end, refresh=args.refresh, only=args.only)
+    failures = ingest(args.start, args.end, only=args.only)
     if failures:
-        print(f"\n{failures} chunk(s) failed or had conflicts; see ingest_log")
+        print(f"\n{failures} month(s) failed or had conflicting values")
         sys.exit(1)
 
 

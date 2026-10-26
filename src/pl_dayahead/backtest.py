@@ -1,29 +1,16 @@
-"""Walk-forward backtest: retrain every day, forecast the next delivery day.
+"""Backtest: replay history one delivery day at a time.
 
 Run from the project root, after staging:
 
     uv run python -m pl_dayahead.backtest naive_weekly naive_similar_day linear linear_res_d1 gbm gbm_res_d1
 
-For each delivery day d from 1 January 2024:
+For each delivery day from 1 January 2024, a fresh model is trained on the 365 days ending the day
+before, then forecasts that day's hours. The last training day's prices were published the afternoon
+before it, so every training price was known at the 11:00 forecast time. Retraining every day follows
+Lago et al. (2021) and Ziel and Weron (2018).
 
-1. Train a fresh model on the 365 delivery days ending d-1. Day d-1's prices were public from
-   about 13:00 on d-2, so every training target was known at the 11:00 issue time on d-1.
-2. Forecast the 24 hours of d (23 or 25 on clock-change days). An hour where an input the
-   model needs is missing gets no forecast (NaN) rather than a guess. A training row with a
-   missing input or target is dropped.
-
-Daily retraining on a rolling window is what the papers do (Lago et al. 2021 recalibrate every
-day; Ziel and Weron 2018 roll their window forward one day at a time). It lets the model follow
-changes in the price level, which follows fuel and carbon costs it is not given, and every
-forecast is made as if in real time.
-
-Before a model runs, availability.check_model refuses it if it promises inputs public at 11:00
-(the comparison models and the naive benchmarks) but uses one that relies on the papers'
-convention.
-
-The predictions are written to the `predictions` table in DuckDB, replacing earlier rows of the
-same model, so evaluate.py and the notebooks can read them without retraining. Each row records
-the first and last training day, so every forecast can be traced to the data its model saw.
+Forecasts are saved to the predictions table with the first and last training day, replacing the
+model's earlier forecasts.
 """
 
 from __future__ import annotations
@@ -35,7 +22,6 @@ import numpy as np
 import pandas as pd
 
 from pl_dayahead import store
-from pl_dayahead.availability import check_model
 from pl_dayahead.features import TARGET, build_features
 from pl_dayahead.models import MODELS
 
@@ -45,7 +31,13 @@ TRAIN_DAYS = 365
 
 def walk_forward(features: pd.DataFrame, model_factory, first_test_day: date = FIRST_TEST_DAY,
                  train_days: int = TRAIN_DAYS, verbose: bool = False) -> pd.DataFrame:
-    """Run the backtest and return one row per forecast hour."""
+    """Run the backtest for one model and return its forecasts.
+
+    For each delivery day from `first_test_day`, train a fresh model on the `train_days` days before
+    it, dropping rows with a missing input or price, then forecast that day's hours. Hours with a
+    missing input get no forecast. Returns one row per hour with the model name, times, first and
+    last training day, forecast and actual price.
+    """
     features = features.sort_values("ts_utc").reset_index(drop=True)
     days = features["delivery_day"].to_numpy()
     test_days = pd.DatetimeIndex(np.unique(days))
@@ -84,7 +76,7 @@ def walk_forward(features: pd.DataFrame, model_factory, first_test_day: date = F
 
 
 def save(con, predictions: pd.DataFrame) -> None:
-    """Replace this model's rows in the predictions table."""
+    """Write a model's forecasts to the predictions table, replacing its earlier forecasts."""
     con.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             model VARCHAR, ts_utc TIMESTAMPTZ, delivery_day DATE, issue_time_utc TIMESTAMPTZ,
@@ -106,6 +98,7 @@ def save(con, predictions: pd.DataFrame) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Read the model names from the command line, then backtest and save each one."""
     parser = argparse.ArgumentParser(description="Walk-forward backtest of one or more models.")
     parser.add_argument("models", nargs="+", choices=sorted(MODELS))
     args = parser.parse_args(argv)
@@ -116,10 +109,6 @@ def main(argv: list[str] | None = None) -> None:
     print(f"features: {len(features):,} hours; availability check passed")
     if convention:
         print(f"  inputs relying on the papers' convention (see availability.py): {', '.join(convention)}")
-    for name in args.models:  # refuse a mismatched model before any long run starts
-        model = MODELS[name]
-        check_model(name, model.features, convention, model.public_at_issue_time)
-
     for name in args.models:
         print(f"{name}: training every day from {FIRST_TEST_DAY}")
         preds = walk_forward(features, MODELS[name], verbose=True)

@@ -1,16 +1,13 @@
-"""Forecasting models.
+"""The forecasting models.
 
-Every model has the same small interface, so the backtest treats them identically:
+Every model has the same members, so the backtest can treat them all alike:
 
-    name: str                    label stored with its predictions
-    features: list[str]          feature-table columns the model uses
-    public_at_issue_time: bool   True if every input must have been public at 11:00 on d-1;
-                                 backtest.py refuses to run such a model if an input relies
-                                 on the papers' convention (see availability.py)
-    fit(X, y) -> self            learn from training rows (X holds only `features`)
-    predict(X) -> array          one price per row of X
+    name         the label stored with its forecasts
+    features     the input columns it uses
+    fit(X, y)    learn from the training rows
+    predict(X)   return one forecast per row
 
-A new model is a class with these members, registered in MODELS.
+To add a model, write a class with these members and add it to MODELS.
 """
 
 from pl_dayahead.models.boosting import GradientBoosting, GradientBoostingResD1

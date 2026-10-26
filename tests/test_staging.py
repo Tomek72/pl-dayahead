@@ -102,3 +102,17 @@ def test_unknown_series_reported_not_used():
     hourly, report = build_hourly(raw)
     assert report["ignored_series"] == ["biomass_da_fcst"]
     assert "biomass_da_fcst" not in hourly.columns
+
+
+def test_hour_mixing_value_lengths_becomes_missing():
+    day = date(2026, 1, 15)
+    raw = full_day(day, "h")
+    ten = pd.Timestamp("2026-01-15 10:00", tz="UTC")
+    mixed = pd.concat([  # one 30-minute value and two 15-minute values: 60 minutes, but unequal parts
+        raw_rows("price_da", pd.DatetimeIndex([ten]), 100.0, 30),
+        raw_rows("price_da", pd.DatetimeIndex([ten + pd.Timedelta(minutes=30), ten + pd.Timedelta(minutes=45)]), 100.0, 15),
+    ])
+    raw = pd.concat([raw[~((raw["series"] == "price_da") & (raw["ts_utc"] == ten))], mixed])
+    hourly, report = build_hourly(raw)
+    assert hourly.loc[hourly["ts_utc"] == ten, "price"].isna().all()
+    assert report["dropped_hours"] == {"price_da": 1}

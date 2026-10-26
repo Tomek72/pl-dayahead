@@ -1,46 +1,31 @@
-"""When each input becomes public, and the timing check every feature must pass.
+"""Publication deadlines, and the check that every model input was published in time.
 
-The forecast for delivery day d is issued at 11:00 Warsaw time on d-1, one hour before the
-12:00 day-ahead gate closure.
+The forecast for delivery day d is made at 11:00 Warsaw time on d-1. ENTSO-E does not record when
+each value was published, so the deadlines in EU Regulation 543/2013 are used instead. Every deadline
+falls on the day before delivery, no later than 18:00 Warsaw time.
 
-ENTSO-E does not return the time each value was published, so availability follows the
-publication deadlines in the EU transparency regulation (543/2013): each value for delivery
-day X is public by a fixed local time on day X-1. Brussels and Warsaw share a time zone.
-
-There are two rules, one per kind of input:
-
-* Prices: a hard rule. No feature may use a price that was not public at the issue time, so
-  no price of day d or later ever enters an input for day d. A feature that breaks this stops
-  the build.
-* Day-ahead forecasts for day d: the papers' convention. The papers this project follows use
-  the day-ahead forecasts for the target day as inputs and describe them as available on day
-  d-1 (Lago et al. 2021). They do not compare the publication hour with the gate closure. The
-  main models follow that convention. In Poland the wind and solar forecast for day d is due
-  at 18:00 on d-1, seven hours after the issue time, so check() reports the features that
-  rely on the convention instead of calling them public at 11:00.
-
-The comparison models use the renewables forecast for d-1 instead, which was public at 11:00.
-They declare public_at_issue_time = True, and check_model() refuses to run such a model if any
-of its inputs relies on the convention.
-
-The load forecast for day d is due by 10:00 on d-1, so it passes the rule. ENTSO-E may hold a
-later update of it; the architecture document lists this under Limitations.
+That gives one rule: an input is in time if it comes from a day before the target day, or from the
+target day itself with a deadline no later than 11:00. Prices for day d are due at 13:00 on d-1, so
+they never qualify. The renewables forecast for day d is due at 18:00 on d-1; the main models use it
+anyway, as the papers do, and check() reports which inputs rely on that. The comparison models use
+only inputs that were in time, and the truncation tests in tests/test_features.py check this against
+the data.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import time
 from typing import Iterable
 
-import pandas as pd
-
-from pl_dayahead.timeutils import LOCAL_TZ, issue_time_utc
+from pl_dayahead.timeutils import ISSUE_TIME_LOCAL
 
 
 @dataclass(frozen=True)
 class Rule:
-    published_by: time  # local time on the day before delivery
+    """A publication deadline: the Warsaw time on the day before delivery by which a series is published, and its legal source."""
+
+    published_by: time
     source: str
 
 
@@ -60,28 +45,20 @@ RULES = {
     ),
 }
 
-# Series whose value for the target day itself may be used although it is published after the
-# issue time, because the reference papers do so. Prices are never on this list.
-PAPERS_CONVENTION = {
-    "load_fcst": "Day-ahead forecast for day d, used as in Lago et al. (2021).",
-    "res_fcst": "Day-ahead forecast for day d, used as in Lago et al. (2021).",
-}
+# Target-day forecasts the papers use as inputs even when they are published after the forecast is
+# made (Lago et al. 2021). Prices are never on this list.
+PAPERS_CONVENTION = {"load_fcst", "res_fcst"}
 
 AGGREGATIONS = {"hour", "last", "min", "max"}
 
 
 @dataclass(frozen=True)
 class FeatureSpec:
-    """One feature taken from a series in the hourly table.
+    """One model input, taken from a column of the hourly table.
 
-    day_offset is the delivery day of the source value minus the target delivery day: 0 is
-    the target day itself, -1 the day before, and so on.
-
-    agg says which value of the source day is taken:
-      "hour"  the same local hour as the target hour
-      "last"  the last hour of the source day (23:00 to 24:00 local)
-      "min"   the lowest value over all hours of the source day
-      "max"   the highest value over all hours of the source day
+    day_offset is the day the value comes from, relative to the target day: 0 is the target day,
+    -1 the day before, and so on. agg is which value of that day is used: "hour" the same hour as
+    the target hour, "last" the last hour of the day, "min" the lowest and "max" the highest.
     """
 
     name: str
@@ -90,58 +67,39 @@ class FeatureSpec:
     agg: str = "hour"
 
     def __post_init__(self) -> None:
+        """Reject an unknown agg value."""
         if self.agg not in AGGREGATIONS:
             raise ValueError(f"{self.name}: agg must be one of {sorted(AGGREGATIONS)}, not {self.agg!r}")
 
 
 class AvailabilityError(Exception):
-    """A feature or model uses data it is not allowed to use."""
+    """Raised when a feature uses data that was not published in time."""
 
 
-def available_at(series: str, delivery_day: date) -> pd.Timestamp:
-    """UTC moment by which the values of `series` for `delivery_day` are public."""
-    if series not in RULES:
-        raise AvailabilityError(f"no availability rule for series {series!r}")
-    local = datetime.combine(delivery_day - timedelta(days=1), RULES[series].published_by, tzinfo=LOCAL_TZ)
-    return pd.Timestamp(local.astimezone(timezone.utc))
+def in_time(spec: FeatureSpec) -> bool:
+    """Return True if the input was published by 11:00 on the day before the target day."""
+    if spec.series not in RULES:
+        raise AvailabilityError(f"no publication rule for series {spec.series!r}")
+    if spec.day_offset < 0:
+        return True  # due on an earlier day, by 18:00 at the latest
+    return spec.day_offset == 0 and RULES[spec.series].published_by <= ISSUE_TIME_LOCAL
 
 
-def check(specs: Iterable[FeatureSpec], target_days: Iterable[date]) -> list[str]:
-    """Check every feature against every target day.
+def check(specs: Iterable[FeatureSpec]) -> list[str]:
+    """Check that every feature was published in time.
 
-    A feature passes if its source values were public at the issue time on every target day.
-    A feature that fails is allowed only if it takes a series on PAPERS_CONVENTION for the
-    target day itself (day_offset 0); its name is returned so the caller can report it.
-    Anything else raises AvailabilityError, including any late use of prices.
+    A target-day forecast published later is allowed under the papers' convention, and its name is
+    returned. Anything else that is late, including any price from the target day, raises
+    AvailabilityError.
     """
-    target_days = list(target_days)
-    problems, convention = [], []
+    convention, late = [], []
     for spec in specs:
-        late = [
-            t for t in target_days
-            if available_at(spec.series, t + timedelta(days=spec.day_offset)) > issue_time_utc(t)
-        ]
-        if not late:
+        if in_time(spec):
             continue
-        if spec.series in PAPERS_CONVENTION and spec.day_offset == 0:
+        if spec.day_offset == 0 and spec.series in PAPERS_CONVENTION:
             convention.append(spec.name)
         else:
-            problems.append(
-                f"{spec.name} uses {spec.series} for day {spec.day_offset:+d}, published after "
-                f"the issue time on {len(late)} of {len(target_days)} target days"
-            )
-    if problems:
-        raise AvailabilityError("; ".join(problems))
+            late.append(f"{spec.name} uses {spec.series} for day {spec.day_offset:+d}, published after 11:00 the day before")
+    if late:
+        raise AvailabilityError("; ".join(late))
     return convention
-
-
-def check_model(name: str, features: Iterable[str], convention: Iterable[str], public_at_issue_time: bool) -> None:
-    """Refuse a model that promises inputs public at 11:00 but uses one that relies on the convention."""
-    if not public_at_issue_time:
-        return
-    used = sorted(set(features) & set(convention))
-    if used:
-        raise AvailabilityError(
-            f"{name} must use only inputs public at the issue time, but {', '.join(used)} "
-            "rely on the papers' convention"
-        )

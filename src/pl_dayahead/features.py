@@ -1,37 +1,16 @@
-"""Build the feature table: one row per delivery hour, with the expert model's inputs.
+"""Build the model inputs: one row per delivery hour.
 
-Each row describes one hour of a target delivery day d and holds:
+Each row holds the forecast time, the hour, weekday and holiday flag, the inputs listed in SPECS, and
+the actual price, which models learn from but never see as an input. Every input is checked by
+availability.check before the table is returned.
 
-* when the forecast is made (issue_time_utc: 11:00 Warsaw time on d-1);
-* calendar features: local hour, weekday, public holiday;
-* data features, each defined by a FeatureSpec: which series, which delivery day relative to
-  d, and which value of that day (same hour, last hour, minimum or maximum). Every spec is
-  checked by availability.check before the table is returned, so a feature that uses a price
-  it could not have known stops the build;
-* the target: the actual price of that hour, which models are trained on but never see as input.
+The inputs follow the expert model of Ziel and Weron (2018) and Maciejowska et al. (2022): the price
+at the same hour one, two and seven days earlier; the last, lowest and highest price of the day
+before; the load forecast; and the wind plus solar forecast, for the target day (main models) or the
+day before (comparison models).
 
-The inputs are those of the expert model (Ziel and Weron 2018, Eq. 10; Maciejowska,
-Uniejewski and Weron 2022, Eq. 5):
-
-* price_lag_1d, price_lag_2d, price_lag_7d: the price of the same local hour on d-1, d-2, d-7;
-* price_last_1d: the price of the last hour of d-1, "the last known price at the time the
-  prediction is made" (Maciejowska et al.);
-* price_min_1d, price_max_1d: the lowest and highest hourly price of d-1. They link each hour
-  to the whole of yesterday, not only to the same hour. They are missing if any hour of d-1
-  is missing, so they never rest on part of a day;
-* load_fcst: the day-ahead load forecast for the same hour of d;
-* res_fcst: the day-ahead renewables forecast (wind plus solar) for the same hour of d, used by
-  the main models as in the papers. It is published at 18:00 on d-1, after the issue time;
-  see availability.py;
-* res_fcst_lag_1d: the renewables forecast for the same hour of d-1, public at 11:00 on d-1,
-  used by the comparison models instead.
-
-"Same hour" means the same local wall-clock hour. Two clock-change cases need a rule:
-* the spring day has no 02:00, so when that day is a lag source its 02:00 value is the average
-  of 01:00 and 03:00;
-* the autumn day has 02:00 twice, so as a lag source its two 02:00 values are averaged, and as
-  a target day both 02:00 rows get the same lag values.
-The minimum and maximum use the actual hours of the source day: 23, 24 or 25 of them.
+"Same hour" means the same hour on the Warsaw clock. When the clocks go forward, the missing 02:00 is
+filled with the average of 01:00 and 03:00; when they go back, the two 02:00 values are averaged.
 """
 
 from __future__ import annotations
@@ -51,7 +30,7 @@ SPECS = [
     FeatureSpec("price_max_1d", "price", -1, "max"),
     FeatureSpec("load_fcst", "load_fcst", 0),
     FeatureSpec("res_fcst", "res_fcst", 0),  # main models: the papers' convention
-    FeatureSpec("res_fcst_lag_1d", "res_fcst", -1),  # comparison models: public at 11:00
+    FeatureSpec("res_fcst_lag_1d", "res_fcst", -1),  # comparison models: published in time
 ]
 PRICE_INPUTS = ["price_lag_1d", "price_lag_2d", "price_lag_7d", "price_last_1d", "price_min_1d", "price_max_1d"]
 CALENDAR = ["local_hour", "weekday", "is_holiday"]
@@ -61,7 +40,7 @@ COLUMNS = ["ts_utc", "delivery_day", "issue_time_utc", *FEATURES, TARGET]
 
 
 def _day_hour_grid(df: pd.DataFrame, column: str) -> pd.DataFrame:
-    """Values of `column` with one row per delivery day and one column per local hour (0 to 23)."""
+    """Reshape a column into one row per delivery day and one column per hour, 0 to 23, with the clock-change rules above."""
     grid = df.pivot_table(index="delivery_day", columns="local_hour", values=column, aggfunc="mean")
     grid = grid.reindex(columns=range(24))
     # Spring clock change: the day has 23 hours and no 02:00. Use the average of 01:00 and 03:00.
@@ -72,12 +51,13 @@ def _day_hour_grid(df: pd.DataFrame, column: str) -> pd.DataFrame:
 
 
 def _hours_in_day(day: pd.Timestamp) -> int:
+    """Return the number of hours in a Warsaw delivery day: 23, 24 or 25."""
     start, end = delivery_day_bounds(day.date())
     return int((end - start) / pd.Timedelta(hours=1))
 
 
 def _whole_day_stat(df: pd.DataFrame, column: str, agg: str) -> pd.Series:
-    """min or max of `column` per delivery day, missing unless every hour of the day has a value."""
+    """Return the lowest or highest value of a column for each delivery day, left empty if any hour of that day is missing."""
     groups = df.groupby("delivery_day")[column]
     stat = groups.min() if agg == "min" else groups.max()
     expected = pd.Series([_hours_in_day(d) for d in stat.index], index=stat.index)
@@ -85,10 +65,10 @@ def _whole_day_stat(df: pd.DataFrame, column: str, agg: str) -> pd.Series:
 
 
 def build_features(hourly: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Feature table from the staged hourly table.
+    """Build the input table from the hourly table, one row per delivery hour.
 
-    Returns the table and the names of the features that rely on the papers' convention
-    (see availability.py).
+    Returns the table and the names of the inputs that rely on the papers' convention. Stops with an
+    error if any input uses data not yet published at the forecast time.
     """
     df = hourly.sort_values("ts_utc").reset_index(drop=True)
     cal = calendar_features(df["ts_utc"])
@@ -116,5 +96,5 @@ def build_features(hourly: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         else:
             df[spec.name] = source_day.map(_whole_day_stat(df, spec.series, spec.agg)).to_numpy()
 
-    convention = check(SPECS, [d.date() for d in days])
+    convention = check(SPECS)
     return df[COLUMNS], convention
