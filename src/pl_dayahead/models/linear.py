@@ -12,6 +12,10 @@ Maciejowska et al. (2022, Eq. 5), plus a holiday dummy. Forecasts are in GW, so 
 EUR/MWh per GW. Wednesday is the baseline day, so each weekday coefficient is the difference from a
 Wednesday.
 
+The renewables input is wind plus solar for hour h of day d-1, the latest forecast published by
+11:00 on d-1. The papers' setup, LinearPapers, uses the forecast for day d instead, which is
+published at 18:00 on d-1, after the forecast is made.
+
 In the hour-23 regression, the last price of the day before and the same-hour price are the same
 number. Least squares then splits their effect equally between the two coefficients, and the
 forecast is unaffected.
@@ -36,11 +40,11 @@ def _features(renewables: str) -> list[str]:
 
 
 class LinearByHour:
-    """Main version: uses the renewables forecast for the delivery day, as the papers do."""
+    """Main version: uses the renewables forecast for the day before, the latest published by 11:00."""
 
     name = "linear"
-    renewables = "res_fcst"
-    features = _features("res_fcst")
+    renewables = "res_fcst_lag_1d"
+    features = _features("res_fcst_lag_1d")
 
     def __init__(self) -> None:
         """Start with no coefficients; fit() estimates one set per hour."""
@@ -89,15 +93,48 @@ class LinearByHour:
         return table
 
 
-class LinearResD1(LinearByHour):
-    """Comparison version: uses the renewables forecast for the day before, so every input was published by 11:00.
+class LinearPapers(LinearByHour):
+    """The papers' setup: uses the renewables forecast for the delivery day, published at 18:00 on d-1.
 
-    The gap to the main version shows what the delivery-day forecast is worth.
+    That is after the 11:00 forecast, so this version could not have been run in time. Its gap to
+    the main version shows how much the papers' convention lowers the error.
     """
 
-    name = "linear_res_d1"
-    renewables = "res_fcst_lag_1d"
-    features = _features("res_fcst_lag_1d")
+    name = "linear_papers"
+    base = "linear"
+    renewables = "res_fcst"
+    features = _features("res_fcst")
+
+
+class LinearAsinh(LinearByHour):
+    """Robustness check: the main version fitted on asinh-transformed prices, as Ziel and Weron (2018) do.
+
+    Each training window's prices are centred on their median and divided by their median absolute
+    deviation, times 1.4826 so that it matches the standard deviation of normal data. asinh(x) is
+    close to x for small x and close to a logarithm for large x, and it is defined below zero, so
+    spikes pull the least-squares fit much less. The target and the six price inputs are transformed
+    alike, and the forecasts are transformed back into EUR/MWh.
+    """
+
+    name = "linear_asinh"
+    base = "linear"
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "LinearAsinh":
+        """Set the centre and scale from the training prices, then fit on the transformed scale."""
+        self.centre = float(y.median())
+        self.scale = 1.4826 * float((y - self.centre).abs().median())
+        return super().fit(self._transform(X), np.arcsinh((y - self.centre) / self.scale))
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Forecast on the transformed scale and transform back into EUR/MWh."""
+        return self.centre + self.scale * np.sinh(super().predict(self._transform(X)))
+
+    def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Return a copy of X with the six price inputs on the transformed scale."""
+        X = X.copy()
+        for col in PRICE_INPUTS:
+            X[col] = np.arcsinh((X[col] - self.centre) / self.scale)
+        return X
 
 
 def latest_coefficients(features: pd.DataFrame, train_days: int = 365) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:

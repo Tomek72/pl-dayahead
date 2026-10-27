@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, format_p,
-                                  scores, to_markdown, version_gaps)
+from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, fmt_p,
+                                  format_p, scores, to_markdown, variant_table)
 
 
 def predictions() -> pd.DataFrame:
@@ -95,16 +95,24 @@ def test_dm_table_layout():
     assert text.loc["good", "good"] == "" and text.loc["good", "naive"] == "<0.001"
 
 
-def test_version_gap_between_main_and_comparison():
-    wide = year_of_forecasts(0.2).rename(columns={"good": "linear", "naive": "linear_res_d1"})
-    gaps = version_gaps(wide, ["linear", "linear_res_d1"])
-    mae = wide[["linear", "linear_res_d1"]].sub(wide["actual"], axis=0).abs().mean()
-    row = gaps.loc["linear"]
-    assert np.isclose(row["gap"], mae["linear_res_d1"] - mae["linear"])
-    assert np.isclose(row["gap %"], 100 * row["gap"] / mae["linear_res_d1"])
-    assert row["p main better"] == "<0.001"
+def test_a_variant_against_its_base_model():
+    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers", "naive": "gbm"})
+    table = variant_table(wide, {"gbm_papers": "gbm"})
+    mae = wide[["gbm", "gbm_papers"]].sub(wide["actual"], axis=0).abs().mean()
+    row = table.loc["gbm_papers"]
+    assert row["base"] == "gbm"
+    assert np.isclose(row["difference"], mae["gbm_papers"] - mae["gbm"]) and row["difference"] < 0
+    assert np.isclose(row["difference %"], 100 * row["difference"] / mae["gbm"])
+    assert row["p"] == "<0.001"
 
 
-def test_no_version_gap_without_both_versions():
-    wide = year_of_forecasts(0.2).rename(columns={"good": "linear"})
-    assert version_gaps(wide, ["linear", "naive"]).empty
+def test_the_variant_p_value_is_two_sided():
+    wide = year_of_forecasts(0.01, seed=1).rename(columns={"good": "gbm_papers", "naive": "gbm"})
+    one_sided = diebold_mariano(daily_mae(wide, ["gbm", "gbm_papers"]), "gbm_papers", "gbm")[1]
+    p = variant_table(wide, {"gbm_papers": "gbm"}).loc["gbm_papers", "p"]
+    assert p == fmt_p(2 * min(one_sided, 1 - one_sided))
+
+
+def test_no_row_for_a_variant_run_without_its_base():
+    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers"})
+    assert variant_table(wide, {"gbm_papers": "gbm"}).empty

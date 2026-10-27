@@ -24,11 +24,12 @@ The results are broken down by period (before and after the move to 15-minute pr
 Only models registered in models/__init__.py are scored. Rows left in the predictions table
 by a model that no longer exists (an old name, say) are listed and ignored.
 
-Main against comparison version. The main linear and tree models use the renewables forecast
-for day d, as the papers do; it is published at 18:00 on d-1, after the issue time. Their
-comparison versions use the forecast for d-1 instead. A separate table shows, for each pair,
-how much lower the main version's error is and whether that gap is significant: what the
-papers' convention is worth.
+Variants. Some registered models are variants of a main model (see models/__init__.py): the
+papers' setup, which uses the renewables forecast for day d, published at 18:00 on d-1, after the
+issue time; and two robustness checks. They are scored on the same hours as every other model
+but kept out of the main tables. A separate table compares each with its base model: the
+difference in MAE, and a two-sided Diebold-Mariano p-value, the chance of a difference this
+large if the two were equally accurate.
 
 Is a difference real or luck? A lower MAE over 24,000 hours can still come from a handful of
 lucky weeks. The Diebold-Mariano test, the standard check in the price forecasting literature,
@@ -62,11 +63,11 @@ import pandas as pd
 
 from pl_dayahead import store
 from pl_dayahead.config import PROJECT_ROOT, SDAC_15MIN_START
-from pl_dayahead.models import MODELS
+from pl_dayahead.models import MODELS, VARIANTS
 from pl_dayahead.timeutils import LOCAL_TZ
 
 BENCHMARK = "naive_weekly"
-VERSION_PAIRS = {"linear": "linear_res_d1", "gbm": "gbm_res_d1"}  # main -> comparison
+SIMILAR_DAY = "naive_similar_day"  # the stronger benchmark, also reported as a percentage change
 RESULTS = PROJECT_ROOT / "reports" / "results.md"
 PERIODS = ["hourly MTU (to Sep 2025)", "15-minute MTU (from Oct 2025)"]
 DM_LAGS = 7  # days of autocorrelation allowed for in the Diebold-Mariano standard error
@@ -152,30 +153,32 @@ def format_p(table: pd.DataFrame) -> pd.DataFrame:
     return table.apply(lambda col: col.map(fmt_p))
 
 
-def version_gaps(wide: pd.DataFrame, models: list[str]) -> pd.DataFrame:
-    """For each main model whose comparison version was also run: both MAEs, the gap and its p-value.
+def variant_table(wide: pd.DataFrame, variants: dict[str, str]) -> pd.DataFrame:
+    """For each variant run together with its base model: both MAEs, the difference and its p-value.
 
-    The gap is the comparison version's MAE minus the main version's: how much the renewables
-    forecast for day d (published after the issue time) lowers the error. The p-value is the
-    one-sided Diebold-Mariano test that the main version is more accurate.
+    The difference is the variant's MAE minus the base model's, so a negative number means the
+    variant is more accurate. The p-value is two-sided: twice the smaller of the two one-sided
+    Diebold-Mariano p-values.
     """
-    pairs = [(m, c) for m, c in VERSION_PAIRS.items() if m in models and c in models]
+    pairs = [(v, b) for v, b in variants.items() if v in wide and b in wide]
     rows = []
     if pairs:
-        daily = daily_mae(wide, [name for pair in pairs for name in pair])
-        for main, comparison in pairs:
-            mae_main = (wide[main] - wide["actual"]).abs().mean()
-            mae_comparison = (wide[comparison] - wide["actual"]).abs().mean()
+        daily = daily_mae(wide, sorted({name for pair in pairs for name in pair}))
+        for variant, base in pairs:
+            mae_base = (wide[base] - wide["actual"]).abs().mean()
+            mae_variant = (wide[variant] - wide["actual"]).abs().mean()
+            p = diebold_mariano(daily, variant, base)[1]
             rows.append({
-                "model": main,
-                "MAE main": mae_main,
-                "MAE comparison": mae_comparison,
-                "gap": mae_comparison - mae_main,
-                "gap %": 100 * (mae_comparison - mae_main) / mae_comparison,
-                "p main better": fmt_p(diebold_mariano(daily, main, comparison)[1]),
+                "variant": variant,
+                "base": base,
+                "MAE base": mae_base,
+                "MAE variant": mae_variant,
+                "difference": mae_variant - mae_base,
+                "difference %": 100 * (mae_variant - mae_base) / mae_base,
+                "p": fmt_p(2 * min(p, 1 - p)),
             })
-    table = pd.DataFrame(rows, columns=["model", "MAE main", "MAE comparison", "gap", "gap %", "p main better"])
-    return table.set_index("model")
+    columns = ["variant", "base", "MAE base", "MAE variant", "difference", "difference %", "p"]
+    return pd.DataFrame(rows, columns=columns).set_index("variant")
 
 
 def to_markdown(df: pd.DataFrame) -> str:
@@ -199,34 +202,40 @@ def main() -> None:
     predictions = predictions[predictions["model"].isin(MODELS)]
 
     models = sorted(predictions["model"].unique(), key=lambda m: (m != BENCHMARK, m))
-    wide = common_hours(predictions)
+    wide = common_hours(predictions)  # every model, variants included, is scored on the same hours
+    main_models = [m for m in models if m not in VARIANTS]
     first, last = wide.index.min(), wide.index.max()
     print(f"{len(wide):,} hours forecast by every model ({', '.join(models)}), "
           f"{first.tz_convert(LOCAL_TZ):%Y-%m-%d} to {last.tz_convert(LOCAL_TZ):%Y-%m-%d}\n")
 
     sections = {
-        "Overall": scores(wide, models),
-        "By period": scores(wide, models, "period"),
-        "By year": scores(wide, models, "year"),
-        "By month": scores(wide, models, "month"),
-        "By local hour": scores(wide, models, "local_hour"),
+        "Overall": scores(wide, main_models),
+        "By period": scores(wide, main_models, "period"),
+        "By year": scores(wide, main_models, "year"),
+        "By month": scores(wide, main_models, "month"),
+        "By local hour": scores(wide, main_models, "local_hour"),
     }
+    overall = sections["Overall"]
+    if SIMILAR_DAY in main_models:
+        for m in main_models:
+            if m != SIMILAR_DAY:
+                overall[f"% vs {SIMILAR_DAY} {m}"] = 100 * (overall[f"MAE {m}"] / overall[f"MAE {SIMILAR_DAY}"] - 1)
     for title in ["Overall", "By period", "By year"]:
         print(title)
         print(sections[title].round(2).to_string(), "\n")
 
-    ranked = sorted(models, key=lambda m: sections["Overall"].loc["all hours", f"MAE {m}"])  # best first
+    ranked = sorted(main_models, key=lambda m: overall.loc["all hours", f"MAE {m}"])  # best first
     dm = format_p(dm_table(wide, ranked))
     n_days = len(daily_mae(wide, ranked))
     print(f"Diebold-Mariano p-values on daily MAE ({n_days:,} days, best model first). "
           "Below 0.05: the row model is more accurate than the column model.")
     print(dm.to_string(), "\n")
 
-    gaps = version_gaps(wide, models)
-    if not gaps.empty:
-        print("Main against comparison version: what the day-d renewables forecast is worth "
-              "(gap = comparison MAE minus main MAE, EUR/MWh)")
-        print(gaps.round(2).to_string(), "\n")
+    variants = variant_table(wide, VARIANTS)
+    if not variants.empty:
+        print("Variants against their base models (difference = variant MAE minus base MAE, EUR/MWh; "
+              "p two-sided)")
+        print(variants.round(2).to_string(), "\n")
 
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     body = [f"# Backtest results\n\nMAE in EUR/MWh on {len(wide):,} hours forecast by every model."]
@@ -234,11 +243,10 @@ def main() -> None:
     body += [f"## Diebold-Mariano test\n\nOne-sided p-values on daily MAE over {n_days:,} days, "
              f"Newey-West standard error with {DM_LAGS} lags. Below 0.05: the row model is more "
              f"accurate than the column model.\n\n{to_markdown(dm)}"]
-    if not gaps.empty:
-        body += ["## Main against comparison version\n\nThe main models use the renewables forecast for "
-                 "day d, published at 18:00 on d-1, as the papers do; the comparison versions use the "
-                 "forecast for d-1, public at 11:00. Gap = comparison MAE minus main MAE in EUR/MWh; "
-                 f"p = one-sided Diebold-Mariano test that the main version is more accurate.\n\n{to_markdown(gaps)}"]
+    if not variants.empty:
+        body += ["## Variants against their base models\n\nEach variant changes one thing about a main "
+                 "model (see models/linear.py and models/boosting.py). Difference = variant MAE minus base "
+                 "MAE in EUR/MWh; p = two-sided Diebold-Mariano test on daily MAE.\n\n" + to_markdown(variants)]
     RESULTS.write_text("\n\n".join(body) + "\n")
     print(f"all tables written to {RESULTS.relative_to(PROJECT_ROOT)}")
 

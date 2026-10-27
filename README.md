@@ -1,32 +1,41 @@
 # Polish day-ahead electricity price forecast
 
-This project forecasts the 24 hourly prices of the Polish day-ahead auction for the next delivery day. Each forecast is issued at 11:00 Warsaw time, one hour before the auction closes. The methods follow the electricity price forecasting literature (Lago et al. 2021; Ziel and Weron 2018; Maciejowska, Uniejewski and Weron 2022). A linear expert model and gradient-boosted trees are tested against two naive benchmarks over 1,028 delivery days, from 1 January 2024 to 24 October 2026.
+This project forecasts the 24 hourly prices of the Polish day-ahead auction for the next delivery day. Each forecast is issued at 11:00 Warsaw time, one hour before the auction closes, and uses only information published by then. The methods follow the electricity price forecasting literature (Lago et al. 2021; Ziel and Weron 2018; Maciejowska, Uniejewski and Weron 2022). A linear expert model and gradient-boosted trees are tested against two naive benchmarks over 1,028 delivery days, from 1 January 2024 to 24 October 2026.
 
-The main models use the renewables forecast for the delivery day, as the papers do. That forecast is published at 18:00 the day before, after the auction has closed. Each main model therefore has a comparison version that uses only inputs due before the auction, and both are reported.
+The reference papers feed their models the renewables forecast for the delivery day, which is published at 18:00 the day before, after the auction has closed. The models here use the latest renewables forecast published by 11:00 instead, and the papers' setup is run as a variant to measure what that convention is worth.
 
 ## Results
 
 Mean absolute error (MAE) on the 24,671 hours that every model forecast, 1 January 2024 to 24 October 2026.
 
-| Model | Renewables forecast used | MAE (EUR/MWh) | Relative MAE vs weekly naive | MAE change vs similar-day naive |
-|---|---|---|---|---|
-| Gradient-boosted trees (`gbm`) | delivery day d | 16.95 | 0.52 | −38% |
-| Linear expert model (`linear`) | delivery day d | 18.30 | 0.56 | −33% |
-| Gradient-boosted trees (`gbm_res_d1`) | day before, d−1 | 21.18 | 0.65 | −23% |
-| Linear expert model (`linear_res_d1`) | day before, d−1 | 21.30 | 0.65 | −22% |
-| Similar-day naive (`naive_similar_day`) | none | 27.34 | 0.84 | 0% |
-| Weekly naive (`naive_weekly`) | none | 32.56 | 1.00 | +19% |
+| Model | MAE (EUR/MWh) | Relative MAE vs weekly naive | MAE change vs similar-day naive |
+|---|---|---|---|
+| Gradient-boosted trees (`gbm`) | 21.18 | 0.65 | −22.5% |
+| Linear expert model (`linear`) | 21.30 | 0.65 | −22.1% |
+| Similar-day naive (`naive_similar_day`) | 27.34 | 0.84 | 0% |
+| Weekly naive (`naive_weekly`) | 32.56 | 1.00 | +19.1% |
+
+Each variant changes one thing about a main model and is scored on the same hours. The p-value is a two-sided Diebold-Mariano test of the difference.
+
+| Variant | What changes | MAE of the main model | MAE of the variant | Difference (EUR/MWh) | p |
+|---|---|---|---|---|---|
+| `linear_papers` | The renewables forecast for day d, as in the papers | 21.30 | 18.30 | −3.01 | <0.001 |
+| `gbm_papers` | The renewables forecast for day d, as in the papers | 21.18 | 16.95 | −4.23 | <0.001 |
+| `linear_asinh` | Fitted on asinh-transformed prices | 21.30 | 20.67 | −0.63 | <0.001 |
+| `gbm_defaults` | scikit-learn's default settings | 21.18 | 21.30 | +0.11 | 0.125 |
 
 What the results show:
 
-1. **With the day-d renewables forecast, the trees are the most accurate model.** Their MAE is 16.95 EUR/MWh against 18.30 for the linear model. The Diebold-Mariano test puts the gap well beyond chance (p < 0.001), and the trees are ahead in each of 2024, 2025 and 2026 and in both market periods.
-2. **With only inputs due before the auction, the two models are tied.** The comparison versions score 21.18 and 21.30, and the Diebold-Mariano p-value between them is 0.273, the only pair in the test that is not significant. The trees' advantage depends on the day-d renewables forecast.
-3. **The day-d renewables forecast is worth 4.23 EUR/MWh to the trees and 3.01 to the linear model.** That is 20% and 14% of the comparison versions' errors (both p < 0.001). A desk with its own weather forecast for day d at 11:00 would land somewhere between the main and the comparison results.
-4. **Errors are higher since 1 October 2025 for every model, the naive ones included.** The weekly naive's MAE rises from 29.86 to 36.99 EUR/MWh. The trees' relative MAE barely moves (0.51 to 0.53), so the errors grow with market volatility. The split cannot separate the switch to 15-minute products from 2026 being a more volatile year.
-5. **Both benchmarks are shown.** Lago et al. recommend the weekly naive as the benchmark for relative MAE, and it is the weaker of the two here. Against the stronger similar-day naive the same models cut the error by 22% to 38%.
-6. **Most of the worst days were regional.** Of the ten days with the largest gbm error, seven were price spikes or negative prices shared with Germany and Czechia, while the models see only Polish inputs. On 12 and 13 January 2026 Poland peaked at about 500 EUR/MWh while German prices stayed below 150. The analysis is in `notebooks/02_post_mortem.ipynb`.
+1. **Using only what was public at 11:00, both models cut the error by 22% against the similar-day naive.** The trees' MAE is 21.18 EUR/MWh and the linear model's 21.30, against 27.34 for the similar-day naive: 22.5% and 22.1% lower.
+2. **The trees and the linear model are tied.** The Diebold-Mariano p-value between them is 0.273, the only pair in the test that is not significant. The trees lead in 2024 (18.59 against 19.09 EUR/MWh) and trail slightly in 2025 and 2026.
+3. **The papers' timing convention flatters the error by 14 to 20%.** Given the renewables forecast for the delivery day, which ENTSO-E publishes at 18:00 after the auction, the linear model's MAE falls by 3.01 EUR/MWh and the trees' by 4.23 (both p < 0.001). A desk with its own weather-based forecast for day d at 11:00 would land somewhere between the two.
+4. **Errors are higher since 1 October 2025 for every model, the naive ones included.** The weekly naive's MAE rises from 29.86 to 36.99 EUR/MWh, while the trees' relative MAE stays at 0.65, so the errors grow with market volatility. The split cannot separate the switch to 15-minute products from 2026 being a more volatile year.
+5. **Both benchmarks are shown.** Lago et al. recommend the weekly naive as the benchmark for relative MAE, and it is the weaker of the two here, so the headline uses the similar-day naive.
+6. **The tree settings barely matter.** With scikit-learn's default settings the trees' MAE is 21.30 EUR/MWh, 0.11 higher than with the fixed settings, and the difference is not significant (p = 0.125).
+7. **Fitting the linear model on asinh-transformed prices, as Ziel and Weron do, lowers its MAE by 3.0% to 20.67 EUR/MWh (p < 0.001).** The transform damps the pull of spikes on the fit. The main model keeps raw prices, as in Maciejowska et al.: adopting the transform after seeing it win on the test period would choose the model on the test data.
+8. **The ten worst days split evenly between forecasts too low and too high.** On five, prices were high all day; on the other five the price fell, four of them with strong wind, and on those five the papers' setup, which had day d's renewables forecast, averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia. The analysis is in `notebooks/02_post_mortem.ipynb`.
 
-Every table (by period, year, month and local hour, the full Diebold-Mariano table, and the main against comparison table) is in [`reports/results.md`](reports/results.md).
+Every table (by period, year, month and local hour, the full Diebold-Mariano table and the variants) is in [`reports/results.md`](reports/results.md).
 
 ![Price against residual load](reports/figures/merit_order.png)
 
@@ -45,20 +54,20 @@ Every table (by period, year, month and local hour, the full Diebold-Mariano tab
 
 ## What the models may see
 
-ENTSO-E does not timestamp each published value, so availability follows the publication deadlines in EU Regulation 543/2013.
+ENTSO-E does not timestamp each published value, so each series is assumed to be published exactly at its deadline in EU Regulation 543/2013. An input is used only if that deadline falls before the 11:00 forecast.
 
 | Input | Delivery day used | Due by | Public at 11:00 on d−1? |
 |---|---|---|---|
 | Prices: same hour on d−1, d−2, d−7; last price, minimum and maximum of d−1 | d−1 and earlier | 1 hour after gate closure (Art. 12(2)(d)) | Yes |
 | Load forecast | d | 10:00 on d−1 (Art. 6(2)(b)) | Yes, though it may be updated later |
-| Wind and solar forecast, main version | d | 18:00 on d−1 (Art. 14(2)(d)) | No |
-| Wind and solar forecast, comparison version | d−1 | 18:00 on d−2 | Yes |
+| Wind and solar forecast | d−1 | 18:00 on d−2 (Art. 14(2)(d)) | Yes |
+| Wind and solar forecast, papers' setup only | d | 18:00 on d−1 | No |
 
 **Prices are a hard rule.** No price of day d or later enters any input. `availability.py` checks every feature against one rule, an input from an earlier day or from the target day with a deadline by 11:00, and the feature build stops if one breaks it.
 
-**Day-d forecasts follow the papers' convention.** The reference papers use the day-ahead forecasts for the target day as inputs and describe them as available on day d−1 (Lago et al. 2021). They do not compare the publication hour with the gate closure. The main models do the same and are labelled as relying on that convention. The comparison models use only inputs published by 11:00, and the second truncation test below checks this against the data.
+**The papers' setup is a variant, never a forecast.** The reference papers use the day-ahead forecasts for the target day as inputs and describe them as available on day d−1 (Lago et al. 2021). They do not compare the publication hour with the gate closure. The variants `linear_papers` and `gbm_papers` do the same, only to measure what the convention is worth.
 
-Two tests check this by truncation. The first deletes every price from day d onwards and requires that no feature of day d changes. The second also deletes day d's wind and solar forecasts and requires that no input of the comparison models changes.
+Two tests check this by truncation. The first deletes every price from day d onwards and requires that no feature of day d changes. The second also deletes day d's wind and solar forecasts and requires that no input of any model outside the papers' setup changes.
 
 ## Data
 
@@ -82,34 +91,37 @@ price(d,h) = b0 + b1 price(d-1,h) + b2 price(d-2,h) + b3 price(d-7,h)
            + six weekday dummies + holiday dummy + error
 ```
 
-This is Ziel and Weron's expert model (2018, Eq. 10) with the two outside inputs of Maciejowska et al. (2022, Eq. 5), plus a holiday dummy. Renewables are wind plus solar, for day d in the main version and d−1 in the comparison version. Wednesday is the baseline weekday.
+This is Ziel and Weron's expert model (2018, Eq. 10) with the two outside inputs of Maciejowska et al. (2022, Eq. 5), plus a holiday dummy. Renewables are wind plus solar for hour h of day d−1, the latest forecast published by 11:00. Wednesday is the baseline weekday.
 
-**Gradient-boosted trees.** scikit-learn's `HistGradientBoostingRegressor`, one model for all 24 hours, with the linear model's inputs plus the hour of the day. It is trained on absolute error, the measure it is scored on. Learning rate 0.05, 400 trees, 31 leaves, at least 40 hours per leaf, L2 regularisation 1.0. The settings were fixed before any backtest and never tuned on the test period.
+**Gradient-boosted trees.** scikit-learn's `HistGradientBoostingRegressor`, one model for all 24 hours, with the linear model's inputs plus the hour of the day. It is trained on absolute error, the measure it is scored on. Learning rate 0.05, 400 trees, 31 leaves, at least 40 hours per leaf, L2 regularisation 1.0. The settings are fixed and the same in every run; the variant `gbm_defaults` shows how much they matter.
+
+**Variants.** Each changes one thing about a main model. `linear_papers` and `gbm_papers` use the renewables forecast for day d, as the papers do. `linear_asinh` fits the linear model to asinh-transformed prices, as Ziel and Weron do: each training window's prices are centred on their median and divided by their median absolute deviation before the transform, and the forecasts are transformed back. `gbm_defaults` uses scikit-learn's default learning rate, number of trees, minimum leaf size and L2 penalty.
 
 ## Backtest and evaluation
 
 - **Walk-forward with daily retraining.** For each delivery day d, a fresh model is trained on the 365 delivery days ending d−1 and forecasts the hours of d. Day d−1's prices are public by 11:00 on d−1, so every training target was known at the issue time.
 - **Missing data.** A training row with a missing input is dropped. A test hour with a missing input gets no forecast, and each model is scored only on the hours every model forecast.
 - **Measures.** MAE in EUR/MWh, and relative MAE: a model's MAE divided by the weekly naive's on the same hours (Lago et al.).
-- **Significance.** A one-sided Diebold-Mariano test on daily mean absolute error for every ordered pair of models, with a Newey-West standard error over 7 days of lags because consecutive days' errors are correlated.
+- **Significance.** A one-sided Diebold-Mariano test on daily mean absolute error for every ordered pair of main models, with a Newey-West standard error over 7 days of lags because consecutive days' errors are correlated. All significant differences in that table survive a Bonferroni correction over its 6 pairs. Each variant is compared with its main model by a two-sided test.
 
 ## Deviations from the papers
 
 | Deviation | Papers | This project | Reason |
 |---|---|---|---|
+| Renewables forecast | For day d, treated as available on d−1 | For d−1, the latest published by 11:00; day d's in a variant | Day d's forecast is due at 18:00 on d−1, after the auction closes |
 | Holiday dummy | Weekday dummies only | Adds Polish public holidays | Holiday prices differ sharply from ordinary weekdays in this data |
 | Calibration window | 730 days (Ziel and Weron); an average of four windows from 56 days to 4 years (Lago et al.) | One 365-day window | Inside Lago et al.'s range; it is the most the data allows on the first test day, and keeps the 2022 gas crisis out of training |
 | Linear model | LEAR, a LASSO model with many inputs (Lago et al.) | The expert model, by OLS | The standard small benchmark of the other two papers: 16 coefficients per hour, nothing to tune, every coefficient readable |
+| Price transformation | asinh of median- and MAD-normalised prices (Ziel and Weron) | Raw prices, as in Maciejowska et al.; asinh in a variant | Coefficients stay in EUR/MWh. The variant is 3.0% more accurate (p < 0.001), but adopting it after the test would choose the model on the test period |
 | Nonlinear model | A deep neural network (Lago et al.) | Gradient-boosted trees | About a second per fit, which makes daily retraining practical, and no architecture search |
 | Significance test | Diebold-Mariano on the daily L1 loss | The same, with a Newey-West correction | Stricter when consecutive days are correlated |
 | Target since October 2025 | The papers predate 15-minute products | Quarter-hours averaged to the hour | One target definition across the whole period |
 
 ## Limitations
 
-- The main version's renewables forecast is published after the auction closes, so its results may overstate what was achievable at 11:00. The comparison version measures by how much.
-- The stored load forecast may be a later update than the version public at 11:00, and all inputs are the versions downloaded in October 2026. ENTSO-E does not timestamp versions, so this cannot be checked from the archive.
+- Every input is assumed to be published at its legal deadline, because ENTSO-E does not timestamp publications. The stored load forecast may be a later update than the version public at 11:00, and all inputs are the versions downloaded in October 2026, so this cannot be checked from the archive.
 - The models see only Polish data, with no fuel, carbon, flow or outage data, so they react to a cost shock only once it shows up in prices.
-- Trees cannot forecast outside the price range of their training window. The linear model can, but in this backtest it missed spikes by about the same amount as the trees.
+- Trees cannot forecast outside the price range of their training window. The linear model can, but in this backtest it was also far too low on spikes: in hours at 250 EUR/MWh and above its bias was −92.9 EUR/MWh, against −104.6 for the trees.
 - The target is hourly while the auction has traded 15-minute products since October 2025.
 - One market and one period, 2024 to 2026.
 
@@ -124,14 +136,14 @@ src/pl_dayahead/
   holidays_pl.py     Polish public holidays
   availability.py    publication rules and the timing check
   features.py        model inputs, each checked by availability.py
-  models/            naive.py, linear.py, boosting.py
+  models/            naive.py, linear.py, boosting.py, and the list of models and variants
   backtest.py        daily walk-forward backtest into the predictions table
   evaluate.py        MAE, relative MAE, Diebold-Mariano tests, reports/results.md
   slopes.py          the linear model's latest coefficients
 notebooks/
   01_merit_order.ipynb   how the Polish price behaves, and price against residual load
   02_post_mortem.ipynb   where the forecasts fail: error by price band and the worst days
-tests/                   pytest suite, 104 tests
+tests/                   pytest suite, 109 tests
 ```
 
 ## Running it
@@ -148,12 +160,12 @@ Then, from the project root:
 uv sync
 uv run python -m pl_dayahead.ingest.entsoe
 uv run python -m pl_dayahead.staging
-uv run python -m pl_dayahead.backtest naive_weekly naive_similar_day linear linear_res_d1 gbm gbm_res_d1
+uv run python -m pl_dayahead.backtest
 uv run python -m pl_dayahead.evaluate
 uv run pytest
 ```
 
-The data is stored in `data/pl_power.duckdb`, which is not part of the repository. The two tree versions take most of the backtest's time, because each fits 1,028 models.
+The data is stored in `data/pl_power.duckdb`, which is not part of the repository. The backtest runs every model and variant; the three tree models take most of its time, because each fits 1,028 models.
 
 ## How this was built
 

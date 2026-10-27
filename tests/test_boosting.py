@@ -5,7 +5,7 @@ import pandas as pd
 
 from pl_dayahead.backtest import walk_forward
 from pl_dayahead.features import PRICE_INPUTS, build_features
-from pl_dayahead.models.boosting import GradientBoosting, GradientBoostingResD1
+from pl_dayahead.models.boosting import PARAMS, GradientBoosting, GradientBoostingDefaults, GradientBoostingPapers
 from pl_dayahead.models.linear import LinearByHour
 from pl_dayahead.timeutils import delivery_index
 
@@ -26,7 +26,7 @@ def inputs(n_days: int, seed: int) -> pd.DataFrame:
 
 def merit_order_price(X: pd.DataFrame) -> pd.Series:
     """A kinked supply curve in load net of renewables: cheap and flat below 12 GW, steep above it."""
-    gw = (X["load_fcst"] - X["res_fcst"]) / 1000
+    gw = (X["load_fcst"] - X["res_fcst_lag_1d"]) / 1000  # the main models' renewables input
     return pd.Series(np.where(gw > 12, 60 + 25 * (gw - 12), 30 + 2.5 * gw), index=X.index)
 
 
@@ -37,7 +37,8 @@ def mae(pred, actual) -> float:
 def test_same_inputs_as_the_linear_model_plus_the_hour():
     assert set(GradientBoosting.features) == set(LinearByHour.features)  # local_hour is already listed there
     assert "local_hour" in GradientBoosting.features
-    assert "res_fcst_lag_1d" in GradientBoostingResD1.features and "res_fcst" not in GradientBoostingResD1.features
+    assert "res_fcst_lag_1d" in GradientBoosting.features and "res_fcst" not in GradientBoosting.features
+    assert "res_fcst" in GradientBoostingPapers.features and "res_fcst_lag_1d" not in GradientBoostingPapers.features
 
 
 def test_learns_a_kinked_merit_order_better_than_the_linear_model():
@@ -58,6 +59,15 @@ def test_same_forecast_every_run():
     assert np.array_equal(first, second)
 
 
+def test_the_defaults_check_changes_the_settings_and_nothing_else():
+    main = GradientBoosting().model.get_params()
+    check = GradientBoostingDefaults().model.get_params()
+    changed = {key for key in main if main[key] != check[key]}
+    assert changed == {"learning_rate", "max_iter", "min_samples_leaf", "l2_regularization"}
+    assert check["loss"] == PARAMS["loss"] == "absolute_error"
+    assert GradientBoostingDefaults.features == GradientBoosting.features
+
+
 def test_both_versions_run_in_the_walk_forward_backtest():
     days = pd.date_range("2023-01-01", "2024-01-03", freq="D")
     idx = delivery_index(days[0].date(), "h")
@@ -73,7 +83,7 @@ def test_both_versions_run_in_the_walk_forward_backtest():
     hourly["wind_fcst"] = hourly["wind_onshore_fcst"]
     hourly["residual_load_fcst"] = hourly["load_fcst"] - hourly["wind_fcst"] - hourly["solar_fcst"]
     feats, _ = build_features(hourly)
-    for model in [GradientBoosting, GradientBoostingResD1]:  # three daily fits each
+    for model in [GradientBoosting, GradientBoostingPapers, GradientBoostingDefaults]:  # three daily fits each
         preds = walk_forward(feats, model, first_test_day=date(2024, 1, 1))
         assert preds["model"].eq(model.name).all()
         assert len(preds) == 3 * 24
