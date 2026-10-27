@@ -66,7 +66,7 @@ All data comes from the [ENTSO-E Transparency Platform](https://transparency.ent
 
 - Values are stored hourly. Quarter-hour values are averaged into hours, and an hour is used only if its values are all the same length and cover 60 minutes; otherwise it is missing.
 - ENTSO-E can revise a value after publishing it. Downloading a month again replaces the stored copy, so the models use the latest version available at download time.
-- Wind is onshore plus offshore. Offshore counts as zero before its first forecast on 17 June 2026, on the assumption that no Polish offshore farm fed the grid before then.
+- Wind is onshore plus offshore. Offshore counts as zero before 18 June 2026, the first delivery day with an offshore forecast, on the assumption that no Polish offshore farm fed the grid before then.
 - Fuel and carbon prices, cross-border flows and plant outages are not used. The reference expert models use only load and renewables forecasts as outside inputs, and Lago et al.'s benchmark datasets contain no fuel or carbon prices. Yesterday's prices carry the current cost level into the forecast.
 
 ## Models
