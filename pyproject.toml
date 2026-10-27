@@ -1,7 +1,7 @@
 [project]
 name = "pl-dayahead"
 version = "0.1.0"
-description = "Add your description here"
+description = "Polish day-ahead electricity price forecast, issued at 11:00 Warsaw time for the next delivery day"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -14,9 +14,6 @@ dependencies = [
     "pytz>=2026.5",
     "scikit-learn>=1.9.1",
 ]
-
-[project.scripts]
-pl-dayahead = "pl_dayahead:main"
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12.0"]

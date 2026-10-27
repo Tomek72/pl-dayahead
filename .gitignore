@@ -9,13 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# Local data and secrets
+# Local data, secrets and notes
 data/
 .env
+CLAUDE.local.md
 
 # Notebooks and macOS
 .ipynb_checkpoints/
 .DS_Store
-.ipynb_checkpoints/
-.ipynb_checkpoints/
-CLAUDE.local.md
