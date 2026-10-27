@@ -4,8 +4,9 @@ Trees can learn that the price responds unevenly to demand: little while cheap p
 sharply once expensive ones are needed. This model tests whether that helps when the information is
 the same as the linear model's.
 
-The settings were fixed before any backtest and never tuned. The model is trained on absolute error,
-the measure it is scored on. Trees cannot forecast a price outside the range of their training data;
+The settings in PARAMS are fixed and the same in every run; GradientBoostingDefaults reruns the
+model with scikit-learn's defaults to show how much they matter. The model is trained on absolute
+error, the measure it is scored on. Trees cannot forecast a price outside the range of their training data;
 the linear model can. Lago et al. (2021) use a neural network as their nonlinear model; trees were
 chosen because one fit takes about a second, which makes daily retraining practical.
 """
@@ -36,14 +37,15 @@ def _features(renewables: str) -> list[str]:
 
 
 class GradientBoosting:
-    """Main version: uses the renewables forecast for the delivery day, as the papers do."""
+    """Main version: uses the renewables forecast for the day before, the latest published by 11:00."""
 
     name = "gbm"
-    features = _features("res_fcst")
+    features = _features("res_fcst_lag_1d")
+    params = PARAMS
 
     def __init__(self) -> None:
-        """Create an untrained model with the fixed settings in PARAMS."""
-        self.model = HistGradientBoostingRegressor(**PARAMS)
+        """Create an untrained model with the fixed settings in `params`."""
+        self.model = HistGradientBoostingRegressor(**self.params)
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "GradientBoosting":
         """Train the trees on the training rows."""
@@ -55,8 +57,22 @@ class GradientBoosting:
         return self.model.predict(X[self.features].astype(float))
 
 
-class GradientBoostingResD1(GradientBoosting):
-    """Comparison version: uses the renewables forecast for the day before, so every input was published by 11:00."""
+class GradientBoostingPapers(GradientBoosting):
+    """The papers' setup: uses the renewables forecast for the delivery day, published at 18:00 on d-1."""
 
-    name = "gbm_res_d1"
-    features = _features("res_fcst_lag_1d")
+    name = "gbm_papers"
+    base = "gbm"
+    features = _features("res_fcst")
+
+
+class GradientBoostingDefaults(GradientBoosting):
+    """Robustness check: the main version with scikit-learn's default settings.
+
+    The learning rate, the number of trees, the minimum leaf size and the L2 penalty take their
+    defaults. The absolute-error loss, the fixed seed and the use of every tree stay, so the check
+    changes the settings and nothing else.
+    """
+
+    name = "gbm_defaults"
+    base = "gbm"
+    params = dict(loss="absolute_error", early_stopping=False, random_state=0)

@@ -5,7 +5,7 @@ import pandas as pd
 
 from pl_dayahead.backtest import walk_forward
 from pl_dayahead.features import PRICE_INPUTS, build_features
-from pl_dayahead.models.linear import LinearByHour, LinearResD1, latest_coefficients
+from pl_dayahead.models.linear import LinearAsinh, LinearByHour, LinearPapers, latest_coefficients
 from pl_dayahead.timeutils import delivery_index
 
 
@@ -31,7 +31,7 @@ def inputs(n_days: int = 60, seed: int = 0) -> pd.DataFrame:
     return X
 
 
-def true_price(X: pd.DataFrame, renewables: str = "res_fcst") -> pd.Series:
+def true_price(X: pd.DataFrame, renewables: str = "res_fcst_lag_1d") -> pd.Series:
     """Prices built from known slopes; renewables matter most at midday, load in the evening."""
     h = X["local_hour"]
     load_slope = np.where(h.between(17, 20), 6.0, 3.0)
@@ -94,13 +94,36 @@ def test_the_choice_of_baseline_weekday_does_not_change_forecasts():
     assert np.allclose(a, b)
 
 
-def test_comparison_version_uses_the_previous_day_renewables():
+def test_main_version_uses_the_previous_day_renewables_and_the_papers_setup_day_d():
     X = inputs()
-    y = true_price(X, renewables="res_fcst_lag_1d")
-    model = LinearResD1().fit(X, y)
-    assert np.allclose(model.design(X)["res_gw"], X["res_fcst_lag_1d"] / 1000)
-    assert np.isclose(model.coefficients().loc[12, "res_gw"], -8.0)
-    assert "res_fcst" not in LinearResD1.features and "res_fcst_lag_1d" in LinearResD1.features
+    main = LinearByHour().fit(X, true_price(X))
+    assert np.allclose(main.design(X)["res_gw"], X["res_fcst_lag_1d"] / 1000)
+    assert "res_fcst" not in LinearByHour.features and "res_fcst_lag_1d" in LinearByHour.features
+    papers = LinearPapers().fit(X, true_price(X, renewables="res_fcst"))
+    assert np.allclose(papers.design(X)["res_gw"], X["res_fcst"] / 1000)
+    assert np.isclose(papers.coefficients().loc[12, "res_gw"], -8.0)
+    assert "res_fcst" in LinearPapers.features and "res_fcst_lag_1d" not in LinearPapers.features
+
+
+def test_asinh_version_centres_on_the_median_and_scales_by_the_mad():
+    X = inputs()
+    y = true_price(X)
+    model = LinearAsinh().fit(X, y)
+    assert model.centre == y.median()
+    assert np.isclose(model.scale, 1.4826 * (y - y.median()).abs().median())
+
+
+def test_asinh_version_is_pulled_less_by_spikes():
+    """A few huge prices in training move the least-squares forecasts far more than the asinh ones."""
+    train, test = inputs(seed=0), inputs(n_days=7, seed=1)
+    y = true_price(train)
+    spiky = y.copy()
+    spiky.iloc[::100] += 2000.0  # one hour in a hundred about 2,000 EUR/MWh higher
+    shift = {}
+    for model in [LinearByHour, LinearAsinh]:
+        clean = model().fit(train, y).predict(test)
+        shift[model.name] = np.mean(np.abs(model().fit(train, spiky).predict(test) - clean))
+    assert shift["linear_asinh"] < 0.2 * shift["linear"]
 
 
 def test_an_hour_never_trained_gets_no_forecast():
@@ -129,9 +152,9 @@ def features_table() -> pd.DataFrame:
     return feats
 
 
-def test_both_versions_run_in_the_walk_forward_backtest():
+def test_every_version_runs_in_the_walk_forward_backtest():
     feats = features_table()
-    for model in [LinearByHour, LinearResD1]:
+    for model in [LinearByHour, LinearPapers, LinearAsinh]:
         preds = walk_forward(feats, model, first_test_day=date(2024, 2, 1))
         assert preds["model"].eq(model.name).all()
         assert preds["prediction"].notna().all()

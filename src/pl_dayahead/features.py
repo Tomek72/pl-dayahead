@@ -6,8 +6,8 @@ availability.check before the table is returned.
 
 The inputs follow the expert model of Ziel and Weron (2018) and Maciejowska et al. (2022): the price
 at the same hour one, two and seven days earlier; the last, lowest and highest price of the day
-before; the load forecast; and the wind plus solar forecast, for the target day (main models) or the
-day before (comparison models).
+before; the load forecast; and the wind plus solar forecast, for the day before (the main models) or
+for the target day (the papers' setup, which uses a forecast published after 11:00).
 
 "Same hour" means the same hour on the Warsaw clock. When the clocks go forward, the missing 02:00 is
 filled with the average of 01:00 and 03:00; when they go back, the two 02:00 values are averaged.
@@ -29,8 +29,8 @@ SPECS = [
     FeatureSpec("price_min_1d", "price", -1, "min"),
     FeatureSpec("price_max_1d", "price", -1, "max"),
     FeatureSpec("load_fcst", "load_fcst", 0),
-    FeatureSpec("res_fcst", "res_fcst", 0),  # main models: the papers' convention
-    FeatureSpec("res_fcst_lag_1d", "res_fcst", -1),  # comparison models: published in time
+    FeatureSpec("res_fcst", "res_fcst", 0),  # the papers' setup: due at 18:00 on d-1, after the forecast
+    FeatureSpec("res_fcst_lag_1d", "res_fcst", -1),  # the main models: published by 11:00
 ]
 PRICE_INPUTS = ["price_lag_1d", "price_lag_2d", "price_lag_7d", "price_last_1d", "price_min_1d", "price_max_1d"]
 CALENDAR = ["local_hour", "weekday", "is_holiday"]

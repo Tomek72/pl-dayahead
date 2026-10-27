@@ -1,15 +1,15 @@
 """Publication deadlines, and the check that every model input was published in time.
 
 The forecast for delivery day d is made at 11:00 Warsaw time on d-1. ENTSO-E does not record when
-each value was published, so the deadlines in EU Regulation 543/2013 are used instead. Every deadline
-falls on the day before delivery, no later than 18:00 Warsaw time.
+each value was published, so each series is assumed to be published exactly at its deadline in EU
+Regulation 543/2013. Every deadline falls on the day before delivery, no later than 18:00 Warsaw time.
 
 That gives one rule: an input is in time if it comes from a day before the target day, or from the
 target day itself with a deadline no later than 11:00. Prices for day d are due at 13:00 on d-1, so
-they never qualify. The renewables forecast for day d is due at 18:00 on d-1; the main models use it
-anyway, as the papers do, and check() reports which inputs rely on that. The comparison models use
-only inputs that were in time, and the truncation tests in tests/test_features.py check this against
-the data.
+they never qualify. The renewables forecast for day d is due at 18:00 on d-1, so the main models use
+the forecast for d-1 instead. Only the papers' setup uses day d's forecast, as the papers do, and
+check() reports which inputs rely on that. The truncation tests in tests/test_features.py check the
+rule against the data.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@ import pytest
 
 from pl_dayahead.availability import AvailabilityError, FeatureSpec, check, in_time
 from pl_dayahead.features import FEATURES, SPECS
-from pl_dayahead.models import MODELS
+from pl_dayahead.models import MODELS, VARIANTS
 
 
 def test_target_day_price_is_never_in_time():
@@ -57,6 +57,12 @@ def test_every_registered_model_uses_only_known_features():
         assert set(model.features) <= set(FEATURES), name
 
 
-def test_only_the_main_linear_and_tree_models_use_the_target_day_renewables():
+def test_only_the_papers_setup_uses_the_target_day_renewables():
     relying = sorted(name for name, model in MODELS.items() if "res_fcst" in model.features)
-    assert relying == ["gbm", "linear"]
+    assert relying == ["gbm_papers", "linear_papers"]
+
+
+def test_every_variant_changes_a_registered_main_model():
+    assert VARIANTS == {"linear_papers": "linear", "gbm_papers": "gbm",
+                        "linear_asinh": "linear", "gbm_defaults": "gbm"}
+    assert not set(VARIANTS.values()) & set(VARIANTS)  # a base model is never itself a variant

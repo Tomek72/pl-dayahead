@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 
 from pl_dayahead.features import COLUMNS, build_features
-from pl_dayahead.models.boosting import GradientBoostingResD1
-from pl_dayahead.models.linear import LinearResD1
+from pl_dayahead.models import MODELS
 from pl_dayahead.timeutils import LOCAL_TZ, delivery_index
 
 
@@ -163,17 +162,17 @@ def test_no_price_of_the_target_day_or_later_is_used():
     )
 
 
-def test_comparison_inputs_were_all_public_at_the_issue_time():
+def test_every_input_outside_the_papers_setup_was_public_at_the_issue_time():
     """Truncation test 2: also delete the target day's wind and solar forecasts.
 
-    The comparison models' inputs must not change. The main models' renewables input does
-    change, which shows the test can see a late input when there is one.
+    No input of any model outside the papers' setup may change. The papers' renewables input
+    does change, which shows the test can see a late input when there is one.
     """
     hourly = staged(date(2026, 1, 1), 20)
     target = date(2026, 1, 12)
     full, _ = build_features(hourly)
     truncated, _ = build_features(truncate(hourly, target, renewables_of_target_day=True))
-    cols = sorted(set(LinearResD1.features) | set(GradientBoostingResD1.features))
+    cols = sorted({c for name, model in MODELS.items() if not name.endswith("_papers") for c in model.features})
     assert "res_fcst" not in cols
     pd.testing.assert_frame_equal(
         rows(full, target)[cols].reset_index(drop=True),

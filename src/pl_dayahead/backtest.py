@@ -1,8 +1,9 @@
 """Backtest: replay history one delivery day at a time.
 
-Run from the project root, after staging:
+Run from the project root, after staging, to backtest every registered model (name some models
+after the command to run only those):
 
-    uv run python -m pl_dayahead.backtest naive_weekly naive_similar_day linear linear_res_d1 gbm gbm_res_d1
+    uv run python -m pl_dayahead.backtest
 
 For each delivery day from 1 January 2024, a fresh model is trained on the 365 days ending the day
 before, then forecasts that day's hours. The last training day's prices were published the afternoon
@@ -100,8 +101,11 @@ def save(con, predictions: pd.DataFrame) -> None:
 def main(argv: list[str] | None = None) -> None:
     """Read the model names from the command line, then backtest and save each one."""
     parser = argparse.ArgumentParser(description="Walk-forward backtest of one or more models.")
-    parser.add_argument("models", nargs="+", choices=sorted(MODELS))
+    parser.add_argument("models", nargs="*", help=f"models to run, all if none are named: {', '.join(MODELS)}")
     args = parser.parse_args(argv)
+    unknown = sorted(set(args.models) - set(MODELS))
+    if unknown:
+        parser.error(f"unknown models: {', '.join(unknown)}")
 
     con = store.connect()
     hourly = con.sql("SELECT * FROM hourly ORDER BY ts_utc").df()
@@ -109,7 +113,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"features: {len(features):,} hours; availability check passed")
     if convention:
         print(f"  inputs relying on the papers' convention (see availability.py): {', '.join(convention)}")
-    for name in args.models:
+    for name in args.models or list(MODELS):
         print(f"{name}: training every day from {FIRST_TEST_DAY}")
         preds = walk_forward(features, MODELS[name], verbose=True)
         save(con, preds)
