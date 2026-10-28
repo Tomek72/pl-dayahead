@@ -42,6 +42,18 @@ def set_day(hourly: pd.DataFrame, day: date, column: str, values) -> pd.DataFram
     return out
 
 
+def auctions(*day_price: tuple[date, float]) -> pd.DataFrame:
+    """EUA auctions, one per (day, price) pair, each of the same volume."""
+    return pd.DataFrame({"auction_date": [d for d, _ in day_price], "price": [p for _, p in day_price], "volume": 1.0})
+
+
+def carbon(feats: pd.DataFrame, day: date) -> float:
+    """The carbon input of a delivery day, the same for each of its hours."""
+    values = rows(feats, day)["eua_lag_2d"].unique()
+    assert len(values) == 1
+    return values[0]
+
+
 def test_columns_and_one_row_per_hour():
     hourly = staged(date(2026, 1, 1), 10)
     feats, convention = build_features(hourly)
@@ -180,3 +192,40 @@ def test_every_input_outside_the_papers_setup_was_public_at_the_issue_time():
     )
     assert rows(truncated, target)["res_fcst"].isna().all()
     assert rows(full, target)["res_fcst"].notna().all()
+
+
+def test_carbon_price_is_the_latest_auction_on_or_before_two_days_earlier():
+    hourly = staged(date(2026, 1, 1), 12)
+    feats, _ = build_features(hourly, auctions((date(2025, 12, 29), 70.0), (date(2026, 1, 5), 80.0),
+                                               (date(2026, 1, 8), 82.0)))
+    assert carbon(feats, date(2026, 1, 10)) == 82.0  # d-2 is 8 January, an auction day
+    assert carbon(feats, date(2026, 1, 9)) == 80.0  # d-2 is 7 January; the latest auction was on the 5th
+    assert carbon(feats, date(2026, 1, 2)) == 70.0  # over New Year the last auction's price carries on
+    assert build_features(hourly)[0]["eua_lag_2d"].isna().all()  # without auctions the input is missing
+
+
+def test_a_day_with_two_auctions_takes_their_volume_weighted_price():
+    two = pd.DataFrame({"auction_date": [date(2026, 1, 5)] * 2, "price": [80.0, 86.0], "volume": [3.0, 1.0]})
+    feats, _ = build_features(staged(date(2026, 1, 1), 10), two)
+    assert carbon(feats, date(2026, 1, 7)) == 81.5  # (3 x 80 + 1 x 86) / 4
+
+
+def test_an_auction_more_than_a_month_old_is_not_used():
+    feats, _ = build_features(staged(date(2026, 1, 1), 50), auctions((date(2026, 1, 1), 80.0)))
+    assert carbon(feats, date(2026, 2, 3)) == 80.0  # d-2 is 1 February, 31 days after the auction
+    assert np.isnan(carbon(feats, date(2026, 2, 4)))  # 32 days: a report must be missing
+
+
+def test_no_auction_from_the_issue_day_on_is_used():
+    """Truncation test 3: delete every auction from d-1 on; the carbon input for day d may not change.
+
+    Deleting the auction on d-2 as well does change it, which shows the test can see a change.
+    """
+    hourly = staged(date(2026, 1, 1), 20)
+    target = date(2026, 1, 15)
+    daily = auctions(*[(date(2026, 1, 1) + timedelta(days=i), 70.0 + i) for i in range(20)])
+    full, _ = build_features(hourly, daily)
+    cut, _ = build_features(hourly, daily[daily["auction_date"] < target - timedelta(days=1)])
+    assert carbon(full, target) == carbon(cut, target) == 82.0  # the auction on 13 January, d-2
+    earlier, _ = build_features(hourly, daily[daily["auction_date"] < target - timedelta(days=2)])
+    assert carbon(earlier, target) == 81.0

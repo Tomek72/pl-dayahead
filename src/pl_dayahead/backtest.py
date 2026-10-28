@@ -17,6 +17,7 @@ model's earlier forecasts.
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date
 
 import numpy as np
@@ -109,11 +110,20 @@ def main(argv: list[str] | None = None) -> None:
 
     con = store.connect()
     hourly = con.sql("SELECT * FROM hourly ORDER BY ts_utc").df()
-    features, convention = build_features(hourly)
+    auctions = con.sql("SELECT auction_date, price, volume FROM eua_auctions").df()
+    features, convention = build_features(hourly, auctions)
     print(f"features: {len(features):,} hours; availability check passed")
     if convention:
         print(f"  inputs relying on the papers' convention (see availability.py): {', '.join(convention)}")
-    for name in args.models or list(MODELS):
+    names = args.models or list(MODELS)
+    # A carbon variant must forecast the same hours as its base model, or every model's scores move
+    # to fewer common hours, so a gap in the auctions stops the run instead.
+    if any("eua_lag_2d" in MODELS[name].features for name in names) and features["eua_lag_2d"].isna().any():
+        missing = features.loc[features["eua_lag_2d"].isna(), "delivery_day"]
+        con.close()
+        sys.exit(f"no EUA price for {missing.nunique()} delivery days from {missing.min():%Y-%m-%d}: "
+                 "run python -m pl_dayahead.ingest.eex first")
+    for name in names:
         print(f"{name}: training every day from {FIRST_TEST_DAY}")
         preds = walk_forward(features, MODELS[name], verbose=True)
         save(con, preds)

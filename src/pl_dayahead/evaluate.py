@@ -28,7 +28,8 @@ by a model that no longer exists (an old name, say) are listed and ignored.
 
 Variants. Some registered models are variants of a main model (see models/__init__.py): the
 papers' setup, which uses the renewables forecast for day d, published at 18:00 on d-1, after the
-issue time; and two robustness checks. They are scored on the same hours as every other model
+issue time; two robustness checks; and the carbon variants, which add the price of the latest EU
+emission allowance auction public at 11:00. They are scored on the same hours as every other model
 but kept out of the main tables. A separate table compares each with its base model: the
 difference in MAE, and a two-sided Diebold-Mariano p-value, the chance of a difference this
 large if the two were equally accurate.

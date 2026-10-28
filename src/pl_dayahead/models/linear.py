@@ -14,7 +14,8 @@ Wednesday.
 
 The renewables input is wind plus solar for hour h of day d-1, the latest forecast published by
 11:00 on d-1. The papers' setup, LinearPapers, uses the forecast for day d instead, which is
-published at 18:00 on d-1, after the forecast is made.
+published at 18:00 on d-1, after the forecast is made. LinearCarbon adds the price of the latest
+EU emission allowance auction public at 11:00.
 
 In the hour-23 regression, the last price of the day before and the same-hour price are the same
 number. Least squares then splits their effect equally between the two coefficients, and the
@@ -135,6 +136,25 @@ class LinearAsinh(LinearByHour):
         for col in PRICE_INPUTS:
             X[col] = np.arcsinh((X[col] - self.centre) / self.scale)
         return X
+
+
+class LinearCarbon(LinearByHour):
+    """Variant: the main version plus the carbon price, so 17 coefficients per hour.
+
+    The carbon input is the clearing price of the latest EU emission allowance auction on or before
+    d-2, the latest public at 11:00 on d-1, in EUR per tonne of CO2. Its slope reads as EUR/MWh per
+    EUR/t: what a euro more per tonne of CO2 adds to the price, given yesterday's prices.
+    """
+
+    name = "linear_eua"
+    base = "linear"
+    features = [*_features("res_fcst_lag_1d"), "eua_lag_2d"]
+
+    def design(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Build the main version's regression inputs and add the carbon price."""
+        d = super().design(X)
+        d["eua"] = X["eua_lag_2d"].astype(float)
+        return d
 
 
 def latest_coefficients(features: pd.DataFrame, train_days: int = 365) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
