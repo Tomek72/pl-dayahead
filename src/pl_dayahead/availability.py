@@ -10,6 +10,11 @@ they never qualify. The renewables forecast for day d is due at 18:00 on d-1, so
 the forecast for d-1 instead. Only the papers' setup uses day d's forecast, as the papers do, and
 check() reports which inputs rely on that. The truncation tests in tests/test_features.py check the
 rule against the data.
+
+The EU emission allowance (EUA) auctions are the one series published on its own day rather than
+the day before: an auction's result is set just after its bidding window closes at 11:00, and the
+ingest checks that it is timed on the auction day (ingest/eex.py). An auction on d-1 is therefore
+never public at 11:00 on d-1, and the carbon input uses the latest auction on or before d-2.
 """
 
 from __future__ import annotations
@@ -23,10 +28,16 @@ from pl_dayahead.timeutils import ISSUE_TIME_LOCAL
 
 @dataclass(frozen=True)
 class Rule:
-    """A publication deadline: the Warsaw time on the day before delivery by which a series is published, and its legal source."""
+    """A publication deadline: the Warsaw time by which a series is published, and its source.
+
+    days_before is the day of publication, counted back from the day a value belongs to: 1 for the
+    day-ahead series, published the day before delivery, and 0 for an auction result, published on
+    the auction day itself.
+    """
 
     published_by: time
     source: str
+    days_before: int = 1
 
 
 RULES = {
@@ -43,13 +54,19 @@ RULES = {
         "Wind plus solar. Reg. 543/2013 Art. 14(2)(d): day-ahead wind and solar forecast no later than "
         "18:00 the day before delivery.",
     ),
+    "eua": Rule(
+        time.max,
+        "EEX primary auction reports: each result is set just after the bidding window closes at 11:00 and "
+        "is timed on the auction day, which ingest/eex.py checks.",
+        days_before=0,
+    ),
 }
 
 # Target-day forecasts the papers use as inputs even when they are published after the forecast is
 # made (Lago et al. 2021). Prices are never on this list.
 PAPERS_CONVENTION = {"load_fcst", "res_fcst"}
 
-AGGREGATIONS = {"hour", "last", "min", "max"}
+AGGREGATIONS = {"hour", "last", "min", "max", "latest"}
 
 
 @dataclass(frozen=True)
@@ -58,7 +75,9 @@ class FeatureSpec:
 
     day_offset is the day the value comes from, relative to the target day: 0 is the target day,
     -1 the day before, and so on. agg is which value of that day is used: "hour" the same hour as
-    the target hour, "last" the last hour of the day, "min" the lowest and "max" the highest.
+    the target hour, "last" the last hour of the day, "min" the lowest and "max" the highest, and
+    "latest" the latest value on or before that day, for a daily series with gaps such as the EUA
+    auctions.
     """
 
     name: str
@@ -80,9 +99,11 @@ def in_time(spec: FeatureSpec) -> bool:
     """Return True if the input was published by 11:00 on the day before the target day."""
     if spec.series not in RULES:
         raise AvailabilityError(f"no publication rule for series {spec.series!r}")
-    if spec.day_offset < 0:
-        return True  # due on an earlier day, by 18:00 at the latest
-    return spec.day_offset == 0 and RULES[spec.series].published_by <= ISSUE_TIME_LOCAL
+    rule = RULES[spec.series]
+    published_on = spec.day_offset - rule.days_before  # the day of publication, relative to the target day
+    if published_on < -1:
+        return True  # published before the issue day
+    return published_on == -1 and rule.published_by <= ISSUE_TIME_LOCAL
 
 
 def check(specs: Iterable[FeatureSpec]) -> list[str]:

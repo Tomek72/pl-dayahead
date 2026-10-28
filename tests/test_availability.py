@@ -23,6 +23,16 @@ def test_renewables_for_the_target_day_are_late_and_for_the_day_before_in_time()
     assert in_time(FeatureSpec("r", "res_fcst", -1))
 
 
+def test_a_carbon_auction_is_in_time_only_from_the_day_after_it():
+    assert in_time(FeatureSpec("c", "eua", -2, "latest"))  # an auction on d-2 ended the day before the forecast
+    assert not in_time(FeatureSpec("c", "eua", -1, "latest"))  # an auction on d-1 ends just after 11:00
+
+
+def test_the_issue_day_auction_is_rejected():
+    with pytest.raises(AvailabilityError, match="eua_issue_day"):
+        check([FeatureSpec("eua_issue_day", "eua", -1, "latest")])
+
+
 def test_project_features_pass_with_the_convention_reported():
     assert check(SPECS) == ["res_fcst"]
 
@@ -64,5 +74,11 @@ def test_only_the_papers_setup_uses_the_target_day_renewables():
 
 def test_every_variant_changes_a_registered_main_model():
     assert VARIANTS == {"linear_papers": "linear", "gbm_papers": "gbm",
-                        "linear_asinh": "linear", "gbm_defaults": "gbm"}
+                        "linear_asinh": "linear", "gbm_defaults": "gbm",
+                        "linear_eua": "linear", "gbm_eua": "gbm"}
     assert not set(VARIANTS.values()) & set(VARIANTS)  # a base model is never itself a variant
+
+
+def test_each_carbon_variant_is_its_main_model_plus_the_carbon_price():
+    for name in ["linear_eua", "gbm_eua"]:
+        assert MODELS[name].features == [*MODELS[VARIANTS[name]].features, "eua_lag_2d"]

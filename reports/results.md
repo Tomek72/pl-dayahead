@@ -112,3 +112,5 @@ Each variant changes one thing about a main model (see models/linear.py and mode
 | gbm_papers | gbm | 21.18 | 16.95 | -4.23 | -19.98 | <0.001 |
 | linear_asinh | linear | 21.30 | 20.67 | -0.63 | -2.97 | <0.001 |
 | gbm_defaults | gbm | 21.18 | 21.30 | 0.11 | 0.54 | 0.125 |
+| linear_eua | linear | 21.30 | 21.28 | -0.02 | -0.10 | 0.810 |
+| gbm_eua | gbm | 21.18 | 21.12 | -0.06 | -0.30 | 0.529 |

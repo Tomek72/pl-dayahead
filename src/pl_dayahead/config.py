@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "pl_power.duckdb"
+EEX_DIR = DATA_DIR / "eex"  # EEX's EU ETS auction reports, as downloaded
 
 BIDDING_ZONE = "PL"
 START_DATE = date(2023, 1, 1)  # first delivery day ingested

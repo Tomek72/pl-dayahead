@@ -76,3 +76,11 @@ class GradientBoostingDefaults(GradientBoosting):
     name = "gbm_defaults"
     base = "gbm"
     params = dict(loss="absolute_error", early_stopping=False, random_state=0)
+
+
+class GradientBoostingCarbon(GradientBoosting):
+    """Variant: the main version plus the price of the latest EU emission allowance auction public at 11:00."""
+
+    name = "gbm_eua"
+    base = "gbm"
+    features = [*_features("res_fcst_lag_1d"), "eua_lag_2d"]

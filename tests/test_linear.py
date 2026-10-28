@@ -5,7 +5,7 @@ import pandas as pd
 
 from pl_dayahead.backtest import walk_forward
 from pl_dayahead.features import PRICE_INPUTS, build_features
-from pl_dayahead.models.linear import LinearAsinh, LinearByHour, LinearPapers, latest_coefficients
+from pl_dayahead.models.linear import LinearAsinh, LinearByHour, LinearCarbon, LinearPapers, latest_coefficients
 from pl_dayahead.timeutils import delivery_index
 
 
@@ -47,6 +47,14 @@ def test_sixteen_coefficients_per_hour():
     coef = LinearByHour().fit(X, true_price(X)).coefficients()
     assert coef.shape == (24, 16)
     assert "wednesday" not in coef.columns  # the baseline day
+
+
+def test_carbon_version_adds_a_seventeenth_coefficient_and_recovers_its_slope():
+    X = inputs()
+    X["eua_lag_2d"] = np.repeat(np.random.default_rng(5).uniform(60, 90, 60), 24)  # one price per day
+    coef = LinearCarbon().fit(X, true_price(X) + 0.4 * X["eua_lag_2d"]).coefficients()
+    assert coef.shape == (24, 17)
+    assert np.allclose(coef["eua"], 0.4)
 
 
 def test_recovers_hour_specific_slopes():
