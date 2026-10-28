@@ -4,6 +4,10 @@ This project forecasts the 24 hourly prices of the Polish day-ahead auction for 
 
 The reference papers feed their models the renewables forecast for the delivery day, which is published at 18:00 the day before, after the auction has closed. The models here use the latest renewables forecast published by 11:00 instead, and the papers' setup is run as a variant to measure what that convention is worth.
 
+![Mean absolute error by model](reports/figures/mae_by_model.png)
+
+*Mean absolute error on the 24,671 hours every model forecast, with the papers' setup in the lighter bars, from `src/pl_dayahead/evaluate.py`.*
+
 ## Results
 
 Mean absolute error (MAE) on the 24,671 hours that every model forecast, 1 January 2024 to 24 October 2026.
@@ -33,7 +37,7 @@ What the results show:
 5. **Both benchmarks are shown.** Lago et al. recommend the weekly naive as the benchmark for relative MAE, and it is the weaker of the two here, so the headline uses the similar-day naive.
 6. **The tree settings barely matter.** With scikit-learn's default settings the trees' MAE is 21.30 EUR/MWh, 0.11 higher than with the fixed settings, and the difference is not significant (p = 0.125).
 7. **Fitting the linear model on asinh-transformed prices, as Ziel and Weron do, lowers its MAE by 3.0% to 20.67 EUR/MWh (p < 0.001).** The transform damps the pull of spikes on the fit. The main model keeps raw prices, as in Maciejowska et al.: adopting the transform after seeing it win on the test period would choose the model on the test data.
-8. **The ten worst days split evenly between forecasts too low and too high.** On five, prices were high all day; on the other five the price fell, four of them with strong wind, and on those five the papers' setup, which had day d's renewables forecast, averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia. The analysis is in `notebooks/02_post_mortem.ipynb`.
+8. **The ten worst days split evenly between forecasts too low and too high.** On five, prices were high all day; on the other five the price fell, four of them with strong wind, and on those five the papers' setup, which had day d's renewables forecast, averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. gbm's daily bias, its mean of forecast minus actual over the day, follows the renewables forecast it could not see. Over all 1,028 days, the Spearman rank correlation between that bias and the change from the forecast gbm saw to day d's own is 0.59, against 0.19 for the papers' setup (1 would mean the bias always rises with the change). On nine of the ten worst days the bias had the same sign as the change. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia. The analysis is in `notebooks/02_post_mortem.ipynb`.
 
 Every table (by period, year, month and local hour, the full Diebold-Mariano table and the variants) is in [`reports/results.md`](reports/results.md).
 
@@ -138,12 +142,12 @@ src/pl_dayahead/
   features.py        model inputs, each checked by availability.py
   models/            naive.py, linear.py, boosting.py, and the list of models and variants
   backtest.py        daily walk-forward backtest into the predictions table
-  evaluate.py        MAE, relative MAE, Diebold-Mariano tests, reports/results.md
+  evaluate.py        MAE, relative MAE, Diebold-Mariano tests, reports/results.md, the headline chart
   slopes.py          the linear model's latest coefficients
 notebooks/
   01_merit_order.ipynb   how the Polish price behaves, and price against residual load
   02_post_mortem.ipynb   where the forecasts fail: error by price band and the worst days
-tests/                   pytest suite, 109 tests
+tests/                   pytest suite, 110 tests
 ```
 
 ## Running it

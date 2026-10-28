@@ -19,7 +19,9 @@ Metrics:
   more, but the ratio still shows skill.
 
 The results are broken down by period (before and after the move to 15-minute products on
-1 October 2025), by year, by month and by local hour, and written to reports/results.md.
+1 October 2025), by year, by month and by local hour, and written to reports/results.md. The
+README's headline chart, each main model's MAE with the papers' setup below gbm and the linear
+model, is written to reports/figures/mae_by_model.png.
 
 Only models registered in models/__init__.py are scored. Rows left in the predictions table
 by a model that no longer exists (an old name, say) are listed and ignored.
@@ -60,6 +62,7 @@ import math
 
 import numpy as np
 import pandas as pd
+from matplotlib.figure import Figure
 
 from pl_dayahead import store
 from pl_dayahead.config import PROJECT_ROOT, SDAC_15MIN_START
@@ -69,8 +72,19 @@ from pl_dayahead.timeutils import LOCAL_TZ
 BENCHMARK = "naive_weekly"
 SIMILAR_DAY = "naive_similar_day"  # the stronger benchmark, also reported as a percentage change
 RESULTS = PROJECT_ROOT / "reports" / "results.md"
+FIGURE = PROJECT_ROOT / "reports" / "figures" / "mae_by_model.png"
 PERIODS = ["hourly MTU (to Sep 2025)", "15-minute MTU (from Oct 2025)"]
 DM_LAGS = 7  # days of autocorrelation allowed for in the Diebold-Mariano standard error
+PAPERS_SETUP = {"gbm": "gbm_papers", "linear": "linear_papers"}  # main model -> its variant with day d's renewables
+
+# The headline chart, in the notebooks' style. Each model keeps its colour (gbm blue, the linear model orange), its
+# papers' setup takes a lighter step of the same hue, and the naive benchmarks are grey.
+LABELS = {"gbm": "Gradient-boosted trees", "linear": "Linear expert model",
+          "naive_similar_day": "Similar-day naive", "naive_weekly": "Weekly naive"}
+COLOURS = {"gbm": "#2a78d6", "gbm_papers": "#86b6ef", "linear": "#eb6834", "linear_papers": "#eb9c7f"}
+INK, INK_2, MUTED = "#0b0b0b", "#52514e", "#898781"  # text: primary, secondary, muted
+GRID, BASELINE, SURFACE = "#e1e0d9", "#c3c2b7", "#fcfcfb"  # gridlines, axis line and benchmark bars, background
+SOURCE = "Source: ENTSO-E Transparency Platform; own backtest"
 
 
 def common_hours(predictions: pd.DataFrame) -> pd.DataFrame:
@@ -192,6 +206,45 @@ def to_markdown(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def mae_chart(wide: pd.DataFrame, models: list[str]) -> Figure:
+    """The README's headline chart: one bar per main model, best first, with its papers' setup, if run, just below."""
+    shown = models + [PAPERS_SETUP[m] for m in models if PAPERS_SETUP.get(m) in wide]
+    mae = wide[shown].sub(wide["actual"], axis=0).abs().mean()
+    bars = []  # (position, label, model), top to bottom
+    y = 0.0
+    for model in sorted(models, key=mae.get):
+        bars.append((y, LABELS.get(model, model), model))
+        if PAPERS_SETUP.get(model) in mae:
+            y += 0.4
+            bars.append((y, "papers' setup", PAPERS_SETUP[model]))
+        y += 0.7
+    positions, labels, names = zip(*bars)
+
+    fig = Figure(figsize=(8, 3.6), facecolor=SURFACE)
+    ax = fig.subplots()
+    ax.set_facecolor(SURFACE)
+    ax.barh(positions, mae[list(names)], height=0.34, color=[COLOURS.get(n, BASELINE) for n in names])
+    for y, name in zip(positions, names):  # each value at the end of its bar, in text colour, as in results.md
+        ax.text(mae[name] + 0.4, y, f"{mae[name]:.2f}", va="center", fontsize=9, color=INK_2)
+    ax.set_yticks(positions, labels)
+    ax.invert_yaxis()  # best model at the top, as in the README's table
+    ax.set_xlim(0, 1.12 * mae.max())
+    ax.set_xlabel("MAE, EUR/MWh", color=INK_2)
+    ax.tick_params(color=MUTED, labelcolor=INK_2)
+    ax.tick_params(axis="y", length=0)
+    ax.grid(axis="x", color=GRID, linewidth=0.6)
+    ax.set_axisbelow(True)
+    for side in ["top", "right", "left"]:
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set(color=BASELINE, linewidth=0.8)
+    first, last = (t.tz_convert(LOCAL_TZ) for t in (wide.index.min(), wide.index.max()))
+    ax.set_title(f"Mean absolute error by model, {first.day} {first:%b %Y} to {last.day} {last:%b %Y}",
+                 loc="left", fontsize=12, fontweight="bold", color=INK, pad=12)
+    fig.text(0.01, 0.01, SOURCE, fontsize=8.5, color=INK_2)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    return fig
+
+
 def main() -> None:
     con = store.connect()
     predictions = con.sql("SELECT model, ts_utc, prediction, actual FROM predictions").df()
@@ -249,6 +302,10 @@ def main() -> None:
                  "MAE in EUR/MWh; p = two-sided Diebold-Mariano test on daily MAE.\n\n" + to_markdown(variants)]
     RESULTS.write_text("\n\n".join(body) + "\n")
     print(f"all tables written to {RESULTS.relative_to(PROJECT_ROOT)}")
+
+    FIGURE.parent.mkdir(parents=True, exist_ok=True)
+    mae_chart(wide, main_models).savefig(FIGURE, dpi=150)
+    print(f"headline chart written to {FIGURE.relative_to(PROJECT_ROOT)}")
 
 
 if __name__ == "__main__":

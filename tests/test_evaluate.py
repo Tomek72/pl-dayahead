@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, fmt_p,
-                                  format_p, scores, to_markdown, variant_table)
+                                  format_p, mae_chart, scores, to_markdown, variant_table)
 
 
 def predictions() -> pd.DataFrame:
@@ -116,3 +116,13 @@ def test_the_variant_p_value_is_two_sided():
 def test_no_row_for_a_variant_run_without_its_base():
     wide = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers"})
     assert variant_table(wide, {"gbm_papers": "gbm"}).empty
+
+
+def test_the_headline_chart_shows_each_mae_best_first_with_the_papers_setup_below_its_model():
+    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm", "naive": "naive_weekly"})
+    wide["gbm_papers"] = wide["actual"] + 0.5 * (wide["gbm"] - wide["actual"])  # half of gbm's error
+    ax = mae_chart(wide, ["naive_weekly", "gbm"]).axes[0]
+    labels = [label.get_text() for label in ax.get_yticklabels()]
+    assert labels == ["Gradient-boosted trees", "papers' setup", "Weekly naive"]
+    mae = wide[["gbm", "gbm_papers", "naive_weekly"]].sub(wide["actual"], axis=0).abs().mean()
+    assert np.allclose([bar.get_width() for bar in ax.patches], mae)
