@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This project forecasts the 24 hourly prices of the Polish day-ahead auction at 11:00 Warsaw time on the day before delivery, one hour before the auction closes, using only information published by then. A linear expert model and gradient-boosted trees are tested against two naive benchmarks in a walk-forward backtest over 1,028 delivery days, from 1 January 2024 to 24 October 2026. Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark, to 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34; the difference between the two models is not significant. A post-mortem in [notebook 02](notebooks/02_post_mortem.ipynb) finds that the trees' daily bias follows the gap between the previous day's wind and solar forecast, the latest available at 11:00, and the delivery day's own, published later (Spearman rank correlation 0.59 over all days).
+This project forecasts the 24 hourly prices of the Polish day-ahead auction at 11:00 Warsaw time on the day before delivery, one hour before the auction closes, using only information published by then. A linear expert model and gradient-boosted trees are tested against two naive benchmarks in a walk-forward backtest over 1,028 delivery days, from 1 January 2024 to 24 October 2026. Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark, to 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34; the difference between the two models is not significant. A post-mortem in [notebook 02](notebooks/02_post_mortem.ipynb) finds that the trees' daily bias follows the change from the wind and solar forecast they saw at 11:00, the one for the day before delivery, to the delivery day's own, published at 18:00 (Spearman rank correlation 0.59 over all days).
 
 ![Mean absolute error by model](reports/figures/mae_by_model.png)
 
@@ -74,7 +74,7 @@ The inputs are those of the expert model of Ziel and Weron (2018, Eq. 10), with 
 | $H(d)$ | 1 on a Polish public holiday, otherwise 0 |
 | $C_{d-2}$ | Clearing price of the latest EUA auction held on or before d−2, in EUR/t: the carbon variants only |
 
-Hours follow the Warsaw clock. When the clocks go forward, the missing 02:00 of an earlier day is filled with the mean of 01:00 and 03:00; when they go back, its two 02:00 values are averaged, as in Ziel and Weron. The lowest and highest price of d−1 are left missing if any hour of d−1 is missing. The holiday dummy is my addition: Ziel and Weron leave holidays out to keep the model small, but holiday prices differ sharply from ordinary weekdays in this data.
+Hours follow the Warsaw clock. When the clocks go forward, the missing 02:00 of an earlier day is filled with the mean of 01:00 and 03:00; when they go back, its two 02:00 values are averaged, as in Ziel and Weron. The lowest and highest price of d−1 are left missing if any hour of d−1 is missing. The holiday dummy is my addition. Ziel and Weron leave holidays out to keep the model small, but fitted on the latest year it lowers the forecast in all 24 hours, by up to 30.4 EUR/MWh at 14:00 (`slopes.py`).
 
 Every input is checked against the publication times in Table 1 when the input table is built (`availability.py`), and the build stops if one is late. Three truncation tests check the data as well as the rule. Deleting every price from day d onwards must leave every input for day d unchanged; deleting day d's renewables forecast too must leave every input outside the papers' setup unchanged; and deleting every auction from d−1 onwards must leave the carbon input unchanged.
 
@@ -211,11 +211,11 @@ Every table, including results by period, year, month and local hour and the ful
 
 **Both models cut the error by 22% against the similar-day naive, and they are tied (p = 0.273).** They are the only pair the Diebold-Mariano test cannot separate; every other pair differs with p < 0.001. The trees lead in 2024 (18.59 against 19.09 EUR/MWh) and trail slightly in 2025 and 2026.
 
-**Errors rose for every model from 1 October 2025: the weekly naive's MAE went from 29.86 to 36.99 EUR/MWh.** The trees' relative MAE was 0.65 in both periods, so their error grew in step with the benchmark's. The split cannot separate the switch to 15-minute products from 2026 being a more volatile year.
+**The weekly naive's MAE rose from 29.86 to 36.99 EUR/MWh after 1 October 2025, and every other model's error rose with it.** The trees' relative MAE was 0.65 in both periods, so their error grew in step with the benchmark's. The split cannot separate the switch to 15-minute products from 2026 being a more volatile year.
 
 ### 5.2 Variants
 
-*Table 5. Each variant against its main model on the same hours, MAE in EUR/MWh; p from a two-sided Diebold-Mariano test.*
+*Table 5. Each variant against its main model on the same hours, MAE in EUR/MWh. Differences are computed before rounding, and p is from a two-sided Diebold-Mariano test.*
 
 | Variant | What changes | MAE of the main model | MAE of the variant | Difference | p |
 |---|---|---|---|---|---|
@@ -226,7 +226,7 @@ Every table, including results by period, year, month and local hour and the ful
 | `linear_eua` | The carbon price added | 21.30 | 21.28 | −0.02 | 0.810 |
 | `gbm_eua` | The carbon price added | 21.18 | 21.12 | −0.06 | 0.529 |
 
-**Day d's renewables forecast would cut the error by 14 to 20%, if it were public by 11:00.** With it, the linear model's MAE falls by 3.01 EUR/MWh and the trees' by 4.23 (both p < 0.001). I would expect a desk with its own weather-based forecast for day d to land between the two.
+**Day d's renewables forecast would cut the error by 14 to 20%, if it were public by 11:00.** With it, the linear model's MAE falls by 3.01 EUR/MWh and the trees' by 4.23 (both p < 0.001). I would expect a desk with its own weather-based forecast for day d to land between the main models and the papers' setup.
 
 **The tree settings barely matter.** With scikit-learn's defaults the trees' MAE is 0.11 EUR/MWh higher, and the difference is not significant (p = 0.125).
 
@@ -236,19 +236,23 @@ Every table, including results by period, year, month and local hour and the ful
 
 ### 5.3 Where the forecast fails
 
-**The ten worst days, the worst 1% of the 1,028 by gbm's daily MAE, split evenly between forecasts too low and too high.** On five, prices were high all day. On the other five the price fell, four of them with strong wind, and on those five the papers' setup averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia.
-
-**gbm's daily bias follows the renewables forecast it could not see (rank correlation 0.59).** The daily bias is the mean of forecast minus actual over the day. Over all 1,028 days, its Spearman rank correlation with the change from the forecast gbm saw to day d's own is 0.59, against 0.19 for the papers' setup (1 would mean the bias always rises with the change). On nine of the ten worst days the bias had the same sign as the change. The analysis is in [`notebooks/02_post_mortem.ipynb`](notebooks/02_post_mortem.ipynb).
+**Hours below 0 or at 250 EUR/MWh and above are 5.3% of all hours but carry 17.7% of the trees' error (Figure 3).** The forecasts there are far too moderate, partly because sorting hours by the actual price puts in those bands the hours where something unforeseen moved the price.
 
 ![Share of hours and of error by price band](reports/figures/error_by_price_level.png)
 
 *Figure 3. Share of hours and share of the trees' error by actual price band. From `notebooks/02_post_mortem.ipynb`.*
 
+**The ten worst days, the worst 1% of the 1,028 by gbm's daily MAE, split evenly between forecasts too low and too high.** On five, prices were high all day. On the other five the price fell, four of them with strong wind, and on those five the papers' setup averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia.
+
+**gbm's daily bias follows the renewables forecast it could not see (rank correlation 0.59).** The daily bias is the mean of forecast minus actual over the day. Over all 1,028 days, its Spearman rank correlation with the change from the forecast gbm saw to day d's own is 0.59, against 0.19 for the papers' setup (1 would mean the bias always rises with the change). On nine of the ten worst days the bias had the same sign as the change. The analysis is in [`notebooks/02_post_mortem.ipynb`](notebooks/02_post_mortem.ipynb).
+
 ## 6. Limitations
 
-Assumptions 1 and 2 can be wrong in both directions. The stored load forecast may be a later update than the version public at 11:00, which would flatter the models, and day d's renewables forecast may have been public before 11:00, which would put the papers' setup within reach. The archive cannot settle either question.
+Assumptions 1 and 2 can be wrong in both directions. The stored load forecast may be a later update than the version public at 11:00, which would flatter the models. Day d's renewables forecast may have been public before 11:00, which would put the papers' setup within reach. The archive cannot settle either question.
 
 The main models see only Polish electricity data, with no fuel, carbon, flow or outage data, so they react to a cost shock only once it shows up in prices; of these inputs, only carbon is tested. Trees cannot forecast outside the price range of their training window; the linear model can, but in this backtest it was also far too low on spikes: in hours at 250 EUR/MWh and above its bias was −92.9 EUR/MWh, against −104.6 for the trees. The target is hourly, while the auction has traded 15-minute products since October 2025, and the results cover one market and one period, 2024 to 2026.
+
+The forecast is a point forecast, one number per hour with no range of likely prices. It is scored on accuracy alone, and what it would be worth to a desk in money, for example as bids in the auction, is not measured.
 
 ## 7. Conclusion
 
@@ -307,7 +311,7 @@ uv run python -m pl_dayahead.evaluate
 uv run pytest
 ```
 
-The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant; the four tree models take most of its time, because each fits 1,028 models.
+The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant in about 35 minutes; the four tree models take most of that time, because each fits 1,028 models. Open the notebooks with `uv run jupyter lab`; notebook 02 also downloads neighbouring prices, so it needs the token too.
 
 ## Use of AI tools
 
