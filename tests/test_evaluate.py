@@ -1,24 +1,24 @@
 import numpy as np
 import pandas as pd
 
-from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, fmt_p,
-                                  format_p, mae_chart, scores, to_markdown, variant_table)
+from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, format_p, mae_chart,
+                                  scores, to_markdown, variant_table)
 
 
 def predictions() -> pd.DataFrame:
-    ts = pd.date_range("2025-09-30 20:00", periods=6, freq="h", tz="UTC")  # crosses 1 October local
+    timestamps = pd.date_range("2025-09-30 20:00", periods=6, freq="h", tz="UTC")  # crosses 1 October local
     actual = np.array([100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
     naive = actual + np.array([10, -10, 20, -20, 10, -10])
-    model = actual + np.array([5, -5, 10, -10, 5, np.nan])  # one hour not forecast
+    linear = actual + np.array([5, -5, 10, -10, 5, np.nan])  # one hour not forecast
     return pd.concat([
-        pd.DataFrame({"model": "naive_weekly", "ts_utc": ts, "prediction": naive, "actual": actual}),
-        pd.DataFrame({"model": "linear", "ts_utc": ts, "prediction": model, "actual": actual}),
+        pd.DataFrame({"model": "naive_weekly", "ts_utc": timestamps, "prediction": naive, "actual": actual}),
+        pd.DataFrame({"model": "linear", "ts_utc": timestamps, "prediction": linear, "actual": actual}),
     ])
 
 
 def test_only_hours_every_model_forecast_are_scored():
-    wide = common_hours(predictions())
-    assert len(wide) == 5
+    hours = common_hours(predictions())
+    assert len(hours) == 5
 
 
 def test_the_benchmark_is_the_weekly_naive():
@@ -26,8 +26,8 @@ def test_the_benchmark_is_the_weekly_naive():
 
 
 def test_mae_and_relative_mae():
-    wide = common_hours(predictions())
-    table = scores(wide, ["naive_weekly", "linear"])
+    hours = common_hours(predictions())
+    table = scores(hours, ["naive_weekly", "linear"])
     assert table["MAE naive_weekly"].item() == 14.0  # (10+10+20+20+10)/5
     assert table["MAE linear"].item() == 7.0
     assert table["rel MAE linear"].item() == 0.5
@@ -35,8 +35,8 @@ def test_mae_and_relative_mae():
 
 
 def test_period_split_at_october_2025():
-    wide = common_hours(predictions())
-    table = scores(wide, ["naive_weekly", "linear"], by="period")
+    hours = common_hours(predictions())
+    table = scores(hours, ["naive_weekly", "linear"], by="period")
     assert table["hours"].sum() == 5
     assert table.loc["hourly MTU (to Sep 2025)", "hours"] == 2  # 20:00 and 21:00 UTC are still 30 September in Warsaw
 
@@ -47,8 +47,8 @@ def test_periods_are_listed_oldest_first():
 
 
 def test_markdown_table():
-    df = pd.DataFrame({"MAE naive": [14.0], "hours": [5]}, index=pd.Index(["all hours"], name=""))
-    lines = to_markdown(df).splitlines()
+    table = pd.DataFrame({"MAE naive": [14.0], "hours": [5]}, index=pd.Index(["all hours"], name=""))
+    lines = to_markdown(table).splitlines()
     assert lines[0] == "|  | MAE naive | hours |"
     assert lines[2] == "| all hours | 14.00 | 5 |"  # hour counts stay integers
 
@@ -56,19 +56,19 @@ def test_markdown_table():
 def year_of_forecasts(skill_gap: float, seed: int = 0) -> pd.DataFrame:
     """A year of hourly forecasts from two models; `good` misses by `skill_gap` less on average."""
     rng = np.random.default_rng(seed)
-    ts = pd.date_range("2025-01-01 00:00", "2025-12-31 23:00", freq="h", tz="Europe/Warsaw").tz_convert("UTC")
-    actual = rng.normal(100, 30, len(ts))
-    noise = rng.normal(0, 20, len(ts))
+    timestamps = pd.date_range("2025-01-01 00:00", "2025-12-31 23:00", freq="h", tz="Europe/Warsaw").tz_convert("UTC")
+    actual = rng.normal(100, 30, len(timestamps))
+    noise = rng.normal(0, 20, len(timestamps))
     rows = []
     for name, scale in [("naive", 1.0), ("good", 1.0 - skill_gap)]:
-        rows.append(pd.DataFrame({"model": name, "ts_utc": ts, "prediction": actual + scale * noise
-                                  + rng.normal(0, 5, len(ts)), "actual": actual}))
+        rows.append(pd.DataFrame({"model": name, "ts_utc": timestamps, "prediction": actual + scale * noise
+                                  + rng.normal(0, 5, len(timestamps)), "actual": actual}))
     return common_hours(pd.concat(rows))
 
 
 def test_daily_mae_has_one_row_per_local_day():
-    wide = year_of_forecasts(0.2)
-    assert len(daily_mae(wide, ["naive", "good"])) == 365
+    hours = year_of_forecasts(0.2)
+    assert len(daily_mae(hours, ["naive", "good"])) == 365
 
 
 def test_a_clearly_better_model_is_significant():
@@ -83,22 +83,22 @@ def test_the_two_directions_add_up_to_one():
 
 
 def test_identical_forecasts_are_not_tested():
-    wide = year_of_forecasts(0.0)
-    wide["copy"] = wide["naive"]
-    assert np.isnan(diebold_mariano(daily_mae(wide, ["naive", "copy"]), "copy", "naive")[1])
+    hours = year_of_forecasts(0.0)
+    hours["copy"] = hours["naive"]
+    assert np.isnan(diebold_mariano(daily_mae(hours, ["naive", "copy"]), "copy", "naive")[1])
 
 
 def test_dm_table_layout():
     table = dm_table(year_of_forecasts(0.2), ["good", "naive"])
     assert table.loc["good", "naive"] < 0.001 and table.loc["naive", "good"] > 0.999
-    text = format_p(table)
+    text = table.map(format_p)
     assert text.loc["good", "good"] == "" and text.loc["good", "naive"] == "<0.001"
 
 
 def test_a_variant_against_its_base_model():
-    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers", "naive": "gbm"})
-    table = variant_table(wide, {"gbm_papers": "gbm"})
-    mae = wide[["gbm", "gbm_papers"]].sub(wide["actual"], axis=0).abs().mean()
+    hours = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers", "naive": "gbm"})
+    table = variant_table(hours, {"gbm_papers": "gbm"})
+    mae = hours[["gbm", "gbm_papers"]].sub(hours["actual"], axis=0).abs().mean()
     row = table.loc["gbm_papers"]
     assert row["base"] == "gbm"
     assert np.isclose(row["difference"], mae["gbm_papers"] - mae["gbm"]) and row["difference"] < 0
@@ -107,22 +107,22 @@ def test_a_variant_against_its_base_model():
 
 
 def test_the_variant_p_value_is_two_sided():
-    wide = year_of_forecasts(0.01, seed=1).rename(columns={"good": "gbm_papers", "naive": "gbm"})
-    one_sided = diebold_mariano(daily_mae(wide, ["gbm", "gbm_papers"]), "gbm_papers", "gbm")[1]
-    p = variant_table(wide, {"gbm_papers": "gbm"}).loc["gbm_papers", "p"]
-    assert p == fmt_p(2 * min(one_sided, 1 - one_sided))
+    hours = year_of_forecasts(0.01, seed=1).rename(columns={"good": "gbm_papers", "naive": "gbm"})
+    one_sided = diebold_mariano(daily_mae(hours, ["gbm", "gbm_papers"]), "gbm_papers", "gbm")[1]
+    p_value = variant_table(hours, {"gbm_papers": "gbm"}).loc["gbm_papers", "p"]
+    assert p_value == format_p(2 * min(one_sided, 1 - one_sided))
 
 
 def test_no_row_for_a_variant_run_without_its_base():
-    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers"})
-    assert variant_table(wide, {"gbm_papers": "gbm"}).empty
+    hours = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers"})
+    assert variant_table(hours, {"gbm_papers": "gbm"}).empty
 
 
 def test_the_headline_chart_shows_each_mae_best_first_with_the_papers_setup_below_its_model():
-    wide = year_of_forecasts(0.2).rename(columns={"good": "gbm", "naive": "naive_weekly"})
-    wide["gbm_papers"] = wide["actual"] + 0.5 * (wide["gbm"] - wide["actual"])  # half of gbm's error
-    ax = mae_chart(wide, ["naive_weekly", "gbm"]).axes[0]
+    hours = year_of_forecasts(0.2).rename(columns={"good": "gbm", "naive": "naive_weekly"})
+    hours["gbm_papers"] = hours["actual"] + 0.5 * (hours["gbm"] - hours["actual"])  # half of gbm's error
+    ax = mae_chart(hours, ["naive_weekly", "gbm"]).axes[0]
     labels = [label.get_text() for label in ax.get_yticklabels()]
     assert labels == ["Gradient-boosted trees", "papers' setup", "Weekly naive"]
-    mae = wide[["gbm", "gbm_papers", "naive_weekly"]].sub(wide["actual"], axis=0).abs().mean()
+    mae = hours[["gbm", "gbm_papers", "naive_weekly"]].sub(hours["actual"], axis=0).abs().mean()
     assert np.allclose([bar.get_width() for bar in ax.patches], mae)

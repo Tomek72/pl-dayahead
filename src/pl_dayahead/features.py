@@ -21,8 +21,7 @@ import numpy as np
 import pandas as pd
 
 from pl_dayahead.availability import FeatureSpec, check
-from pl_dayahead.holidays_pl import is_holiday
-from pl_dayahead.timeutils import calendar_features, delivery_day_bounds, issue_time_utc
+from pl_dayahead.timeutils import calendar_features, delivery_day_bounds, is_holiday, issue_time_utc
 
 SPECS = [
     FeatureSpec("price_lag_1d", "price", -1),  # same hour on the issue day: the latest known prices
@@ -40,16 +39,21 @@ MAX_AUCTION_AGE_DAYS = 31  # the auctions pause for up to four weeks over New Ye
 PRICE_INPUTS = ["price_lag_1d", "price_lag_2d", "price_lag_7d", "price_last_1d", "price_min_1d", "price_max_1d"]
 CALENDAR = ["local_hour", "weekday", "is_holiday"]
 TARGET = "price"
-FEATURES = CALENDAR + [s.name for s in SPECS]
+FEATURES = CALENDAR + [spec.name for spec in SPECS]
 COLUMNS = ["ts_utc", "delivery_day", "issue_time_utc", *FEATURES, TARGET]
 
 
-def _day_hour_grid(df: pd.DataFrame, column: str) -> pd.DataFrame:
+def model_inputs(renewables: str) -> list[str]:
+    """The inputs of the linear model and the trees, with `renewables` as their wind plus solar column."""
+    return [*CALENDAR, *PRICE_INPUTS, "load_fcst", renewables]
+
+
+def _day_hour_grid(hours: pd.DataFrame, column: str) -> pd.DataFrame:
     """Reshape a column into one row per delivery day and one column per hour, 0 to 23, with the clock-change rules above."""
-    grid = df.pivot_table(index="delivery_day", columns="local_hour", values=column, aggfunc="mean")
+    grid = hours.pivot_table(index="delivery_day", columns="local_hour", values=column, aggfunc="mean")
     grid = grid.reindex(columns=range(24))
     # Spring clock change: the day has 23 hours and no 02:00. Use the average of 01:00 and 03:00.
-    hours_per_day = df.groupby("delivery_day").size()
+    hours_per_day = hours.groupby("delivery_day").size()
     spring = hours_per_day.index[hours_per_day == 23].intersection(grid.index)
     grid.loc[spring, 2] = (grid.loc[spring, 1] + grid.loc[spring, 3]) / 2
     return grid
@@ -61,12 +65,12 @@ def _hours_in_day(day: pd.Timestamp) -> int:
     return int((end - start) / pd.Timedelta(hours=1))
 
 
-def _whole_day_stat(df: pd.DataFrame, column: str, agg: str) -> pd.Series:
+def _whole_day_stat(hours: pd.DataFrame, column: str, agg: str) -> pd.Series:
     """Return the lowest or highest value of a column for each delivery day, left empty if any hour of that day is missing."""
-    groups = df.groupby("delivery_day")[column]
-    stat = groups.min() if agg == "min" else groups.max()
-    expected = pd.Series([_hours_in_day(d) for d in stat.index], index=stat.index)
-    return stat.where(groups.count() == expected)
+    by_day = hours.groupby("delivery_day")[column]
+    values = by_day.min() if agg == "min" else by_day.max()
+    expected = pd.Series([_hours_in_day(day) for day in values.index], index=values.index)
+    return values.where(by_day.count() == expected)
 
 
 def _latest_auction_price(auctions: pd.DataFrame | None, days: pd.Series) -> np.ndarray:
@@ -79,11 +83,11 @@ def _latest_auction_price(auctions: pd.DataFrame | None, days: pd.Series) -> np.
         return np.full(len(days), np.nan)
     auction_day = pd.to_datetime(auctions["auction_date"])
     turnover = (auctions["price"] * auctions["volume"]).groupby(auction_day).sum()
-    daily = (turnover / auctions["volume"].groupby(auction_day).sum()).sort_index()
-    held = pd.Series(daily.index, index=daily.index)
-    wanted = daily.index.union(pd.DatetimeIndex(days.unique()))
-    price = daily.reindex(wanted).ffill()
-    age = wanted - pd.DatetimeIndex(held.reindex(wanted).ffill())
+    daily_price = (turnover / auctions["volume"].groupby(auction_day).sum()).sort_index()
+    held_on = pd.Series(daily_price.index, index=daily_price.index)
+    wanted = daily_price.index.union(pd.DatetimeIndex(days.unique()))
+    price = daily_price.reindex(wanted).ffill()
+    age = wanted - pd.DatetimeIndex(held_on.reindex(wanted).ffill())
     price[age > pd.Timedelta(days=MAX_AUCTION_AGE_DAYS)] = np.nan
     return days.map(price).to_numpy()
 
@@ -96,33 +100,29 @@ def build_features(hourly: pd.DataFrame, auctions: pd.DataFrame | None = None) -
     names of the inputs that rely on the papers' convention. Stops with an error if any input uses
     data not yet published at the forecast time.
     """
-    df = hourly.sort_values("ts_utc").reset_index(drop=True)
-    cal = calendar_features(df["ts_utc"])
-    df["delivery_day"] = pd.to_datetime(cal["delivery_day"].to_numpy())  # midnight, no time zone
-    df["local_hour"] = cal["local_hour"].to_numpy()
-    df["weekday"] = cal["weekday"].to_numpy()
-    df["is_holiday"] = is_holiday(df["delivery_day"]).to_numpy()
-    df["res_fcst"] = df["wind_fcst"] + df["solar_fcst"]  # missing if either part is missing
-
-    days = df["delivery_day"].drop_duplicates()
-    issue = {d: issue_time_utc(d.date()) for d in days}
-    df["issue_time_utc"] = df["delivery_day"].map(issue)
+    features = hourly.sort_values("ts_utc").reset_index(drop=True)
+    calendar = calendar_features(features["ts_utc"])
+    features["delivery_day"] = pd.to_datetime(calendar["delivery_day"].to_numpy())  # midnight, no time zone
+    features["local_hour"] = calendar["local_hour"].to_numpy()
+    features["weekday"] = calendar["weekday"].to_numpy()
+    features["is_holiday"] = is_holiday(features["delivery_day"]).to_numpy()
+    features["res_fcst"] = features["wind_fcst"] + features["solar_fcst"]  # missing if either part is missing
+    issue_times = {day: issue_time_utc(day.date()) for day in features["delivery_day"].drop_duplicates()}
+    features["issue_time_utc"] = features["delivery_day"].map(issue_times)
 
     for spec in SPECS:
-        source_day = df["delivery_day"] + pd.Timedelta(days=spec.day_offset)
+        source_day = features["delivery_day"] + pd.Timedelta(days=spec.day_offset)
         if spec.agg == "hour" and spec.day_offset == 0:
-            df[spec.name] = df[spec.series]  # the target hour itself
+            features[spec.name] = features[spec.series]  # the target hour itself
         elif spec.agg == "hour":
-            lookup = _day_hour_grid(df, spec.series).stack()  # index: (delivery_day, local_hour)
-            source = pd.MultiIndex.from_arrays([source_day, df["local_hour"]])
-            df[spec.name] = lookup.reindex(source).to_numpy()
+            by_day_and_hour = _day_hour_grid(features, spec.series).stack()
+            wanted = pd.MultiIndex.from_arrays([source_day, features["local_hour"]])
+            features[spec.name] = by_day_and_hour.reindex(wanted).to_numpy()
         elif spec.agg == "last":
-            last_hour = _day_hour_grid(df, spec.series)[23]
-            df[spec.name] = source_day.map(last_hour).to_numpy()
+            features[spec.name] = source_day.map(_day_hour_grid(features, spec.series)[23]).to_numpy()
         elif spec.agg == "latest":
-            df[spec.name] = _latest_auction_price(auctions, source_day)
+            features[spec.name] = _latest_auction_price(auctions, source_day)
         else:
-            df[spec.name] = source_day.map(_whole_day_stat(df, spec.series, spec.agg)).to_numpy()
+            features[spec.name] = source_day.map(_whole_day_stat(features, spec.series, spec.agg)).to_numpy()
 
-    convention = check(SPECS)
-    return df[COLUMNS], convention
+    return features[COLUMNS], check(SPECS)

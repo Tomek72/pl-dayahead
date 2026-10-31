@@ -41,28 +41,28 @@ def walk_forward(features: pd.DataFrame, model_factory, first_test_day: date = F
     last training day, forecast and actual price.
     """
     features = features.sort_values("ts_utc").reset_index(drop=True)
-    days = features["delivery_day"].to_numpy()
-    test_days = pd.DatetimeIndex(np.unique(days))
+    delivery_days = features["delivery_day"].to_numpy()
+    test_days = pd.DatetimeIndex(np.unique(delivery_days))
     test_days = test_days[test_days >= pd.Timestamp(first_test_day)]
-    out = []
+    forecasts_by_day = []
     for day in test_days:
         train_from = day - pd.Timedelta(days=train_days)
         train_to = day - pd.Timedelta(days=1)
         # The table is sorted by time, so each day's rows form one block.
-        lo, start, end = np.searchsorted(days, [train_from.to_datetime64(), day.to_datetime64(),
-                                                (day + pd.Timedelta(days=1)).to_datetime64()])
-        train, test = features.iloc[lo:start], features.iloc[start:end]
+        train_start, test_start, test_end = np.searchsorted(
+            delivery_days, [train_from.to_datetime64(), day.to_datetime64(), (day + pd.Timedelta(days=1)).to_datetime64()])
+        train, test = features.iloc[train_start:test_start], features.iloc[test_start:test_end]
 
         model = model_factory()
-        cols = list(model.features)
-        train = train.dropna(subset=cols + [TARGET])
+        inputs = list(model.features)
+        train = train.dropna(subset=inputs + [TARGET])
         prediction = pd.Series(np.nan, index=test.index)
-        usable = test[cols].notna().all(axis=1)
+        usable = test[inputs].notna().all(axis=1)
         if not train.empty and usable.any():
-            model.fit(train[cols], train[TARGET])
-            prediction[usable] = model.predict(test.loc[usable, cols])
+            model.fit(train[inputs], train[TARGET])
+            prediction[usable] = model.predict(test.loc[usable, inputs])
 
-        out.append(pd.DataFrame({
+        forecasts_by_day.append(pd.DataFrame({
             "model": model.name,
             "ts_utc": test["ts_utc"],
             "delivery_day": test["delivery_day"],
@@ -74,7 +74,7 @@ def walk_forward(features: pd.DataFrame, model_factory, first_test_day: date = F
         }))
         if verbose and (day.day == 1 or day == test_days[-1]):
             print(f"  {model.name}: {day:%Y-%m-%d}", flush=True)
-    return pd.concat(out, ignore_index=True)
+    return pd.concat(forecasts_by_day, ignore_index=True)
 
 
 def save(con, predictions: pd.DataFrame) -> None:
@@ -85,8 +85,7 @@ def save(con, predictions: pd.DataFrame) -> None:
             trained_from DATE, trained_to DATE, prediction DOUBLE, actual DOUBLE, run_at TIMESTAMPTZ
         )
     """)
-    name = predictions["model"].iloc[0]
-    con.execute("DELETE FROM predictions WHERE model = ?", [name])
+    con.execute("DELETE FROM predictions WHERE model = ?", [predictions["model"].iloc[0]])
     con.register("new_predictions", predictions.assign(run_at=pd.Timestamp.now(tz="UTC")))
     try:
         con.execute("""
@@ -125,11 +124,11 @@ def main(argv: list[str] | None = None) -> None:
                  "run python -m pl_dayahead.ingest.eex first")
     for name in names:
         print(f"{name}: training every day from {FIRST_TEST_DAY}")
-        preds = walk_forward(features, MODELS[name], verbose=True)
-        save(con, preds)
-        scored = preds.dropna(subset=["prediction", "actual"])
+        predictions = walk_forward(features, MODELS[name], verbose=True)
+        save(con, predictions)
+        scored = predictions.dropna(subset=["prediction", "actual"])
         mae = (scored["prediction"] - scored["actual"]).abs().mean()
-        print(f"{name}: {preds['delivery_day'].nunique():,} test days, {len(scored):,} of {len(preds):,} "
+        print(f"{name}: {predictions['delivery_day'].nunique():,} test days, {len(scored):,} of {len(predictions):,} "
               f"hours forecast, MAE {mae:.2f} EUR/MWh")
     con.close()
 

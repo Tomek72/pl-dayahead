@@ -23,8 +23,8 @@ from pl_dayahead import store
 from pl_dayahead.config import BIDDING_ZONE, START_DATE, entsoe_token
 from pl_dayahead.timeutils import LOCAL_TZ, delivery_day_bounds, ensure_utc
 
-PAUSE_S = 0.5  # between requests; the API bans you for 10 minutes above 400 per minute
-ALLOWED_RESOLUTIONS = {15, 30, 60}
+PAUSE_SECONDS = 0.5  # between requests; the API bans you for 10 minutes above 400 per minute
+ALLOWED_RESOLUTIONS = [15, 30, 60]
 
 # entsoe-py column names -> our series names.
 COLUMN_NAMES = {
@@ -34,44 +34,26 @@ COLUMN_NAMES = {
     "Wind Offshore": "wind_offshore_da_fcst",
 }
 
-
-# --- queries --------------------------------------------------------------------
-
-
-def _prices(client, start: pd.Timestamp, end: pd.Timestamp):
-    """Download day-ahead prices: hourly until 30 September 2025, every 15 minutes from 1 October 2025."""
-    return client.query_day_ahead_prices(BIDDING_ZONE, start=start, end=end)
-
-
-def _load_forecast(client, start: pd.Timestamp, end: pd.Timestamp):
-    """Download the day-ahead load forecast (process type A01)."""
-    return client.query_load_forecast(BIDDING_ZONE, start=start, end=end, process_type="A01")
-
-
-def _wind_solar_forecast(client, start: pd.Timestamp, end: pd.Timestamp):
-    """Download the day-ahead wind and solar forecast (process type A01, not the intraday updates)."""
-    return client.query_wind_and_solar_forecast(BIDDING_ZONE, start=start, end=end, process_type="A01")
-
-
+# Series name -> download. Prices are hourly until 30 September 2025 and every 15 minutes from 1 October
+# 2025. Both forecasts are the day-ahead ones (process type A01), not the intraday updates.
 QUERIES = {
-    "price_da": _prices,
-    "load_da_fcst": _load_forecast,
-    "wind_solar_da_fcst": _wind_solar_forecast,
+    "price_da": lambda client, start, end: client.query_day_ahead_prices(BIDDING_ZONE, start=start, end=end),
+    "load_da_fcst": lambda client, start, end: client.query_load_forecast(
+        BIDDING_ZONE, start=start, end=end, process_type="A01"),
+    "wind_solar_da_fcst": lambda client, start, end: client.query_wind_and_solar_forecast(
+        BIDDING_ZONE, start=start, end=end, process_type="A01"),
 }
-
-
-# --- helpers (tested without network) -----------------------------------------------
 
 
 def month_chunks(start: date, end: date) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     """Split the days from `start` up to the day before `end` into calendar months, each given as a UTC start and end."""
     chunks = []
-    first = start.replace(day=1)
-    while first < end:
-        nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
-        lo, hi = max(first, start), min(nxt, end)
-        chunks.append((delivery_day_bounds(lo)[0], delivery_day_bounds(hi)[0]))
-        first = nxt
+    month_start = start.replace(day=1)
+    while month_start < end:
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        first_day, end_day = max(month_start, start), min(next_month, end)
+        chunks.append((delivery_day_bounds(first_day)[0], delivery_day_bounds(end_day)[0]))
+        month_start = next_month
     return chunks
 
 
@@ -82,7 +64,7 @@ def series_name(column) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(column).lower()).strip("_") + "_da_fcst"
 
 
-def row_resolution(ts: pd.Series) -> pd.Series | None:
+def row_resolution(timestamps: pd.Series) -> pd.Series | None:
     """Work out how many minutes each row covers (15, 30 or 60) from the gaps to its neighbouring rows.
 
     Each row gets the smaller of the gaps to the row before and the row after, counting only gaps of
@@ -90,13 +72,13 @@ def row_resolution(ts: pd.Series) -> pd.Series | None:
     month, as the Polish forecasts did on 13 June 2024. Returns None if no gap has a valid length.
     """
     minute = pd.Timedelta(minutes=1)
-    before = ts.diff() / minute
-    after = -ts.diff(-1) / minute
-    valid = sorted(ALLOWED_RESOLUTIONS)
-    res = pd.concat([before.where(before.isin(valid)), after.where(after.isin(valid))], axis=1).min(axis=1)
-    if res.isna().all():
+    gap_before = timestamps.diff() / minute
+    gap_after = -timestamps.diff(-1) / minute
+    resolution = pd.concat([gap_before.where(gap_before.isin(ALLOWED_RESOLUTIONS)),
+                            gap_after.where(gap_after.isin(ALLOWED_RESOLUTIONS))], axis=1).min(axis=1)
+    if resolution.isna().all():
         return None
-    return res.fillna(res.mode().iloc[0]).astype(int)
+    return resolution.fillna(resolution.mode().iloc[0]).astype(int)
 
 
 def to_long(
@@ -126,28 +108,25 @@ def to_long(
         .drop_duplicates()
     )
 
-    conflicts, parts = [], []
-    for name, grp in long.groupby("series", sort=True):
-        grp = grp.sort_values("ts_utc")
-        n_repeated = int(grp["ts_utc"].duplicated().sum())
-        if n_repeated:
-            conflicts.append(f"{name}: {n_repeated} timestamps with more than one value")
+    conflicts, kept = [], []
+    for name, series_rows in long.groupby("series", sort=True):
+        series_rows = series_rows.sort_values("ts_utc")
+        repeated = int(series_rows["ts_utc"].duplicated().sum())
+        if repeated:
+            conflicts.append(f"{name}: {repeated} timestamps with more than one value")
             continue
-        if len(grp) == 1:
-            resolution = pd.Series(60, index=grp.index)
+        if len(series_rows) == 1:
+            resolution = pd.Series(60, index=series_rows.index)
         else:
-            resolution = row_resolution(grp["ts_utc"])
+            resolution = row_resolution(series_rows["ts_utc"])
             if resolution is None:
                 conflicts.append(f"{name}: no gap between rows is 15, 30 or 60 minutes")
                 continue
-        parts.append(grp.assign(resolution_min=resolution))
+        kept.append(series_rows.assign(resolution_min=resolution))
 
-    rows = pd.concat(parts) if parts else long.iloc[0:0].assign(resolution_min=[])
-    rows = rows.assign(retrieved_at=retrieved_at)[store.COLUMNS].reset_index(drop=True)
+    rows = pd.concat(kept) if kept else long.iloc[0:0].assign(resolution_min=[])
+    rows = rows.assign(retrieved_at=retrieved_at)[store.ENTSOE_COLUMNS].reset_index(drop=True)
     return rows, conflicts
-
-
-# --- runner -------------------------------------------------------------------------
 
 
 def ingest(start: date, end: date, only: list[str] | None = None) -> int:
@@ -163,27 +142,27 @@ def ingest(start: date, end: date, only: list[str] | None = None) -> int:
     failures = 0
 
     for query in only or list(QUERIES):
-        for lo, hi in month_chunks(start, end):
-            month = lo.tz_convert(LOCAL_TZ).strftime("%Y-%m")
+        for month_start, month_end in month_chunks(start, end):
+            month = month_start.tz_convert(LOCAL_TZ).strftime("%Y-%m")
             retrieved_at = pd.Timestamp.now(tz="UTC")
             try:
-                raw = QUERIES[query](client, lo, hi)
+                raw = QUERIES[query](client, month_start, month_end)
             except NoMatchingDataError:
                 print(f"{query:20s} {month}  no data")
                 continue
-            except Exception as exc:  # reported, and the run moves on to the next month
+            except Exception as error:  # reported, and the run moves on to the next month
                 failures += 1
-                message = re.sub(r"securityToken=[^&\s]+", "securityToken=HIDDEN", str(exc))  # never print the token
-                print(f"{query:20s} {month}  ERROR {type(exc).__name__}: {message}")
+                message = re.sub(r"securityToken=[^&\s]+", "securityToken=HIDDEN", str(error))  # never print the token
+                print(f"{query:20s} {month}  ERROR {type(error).__name__}: {message}")
                 continue
             finally:
-                time.sleep(PAUSE_S)
+                time.sleep(PAUSE_SECONDS)
 
-            rows, conflicts = to_long(raw, query, lo, hi, retrieved_at)
-            n_rows = store.replace_month(con, rows, lo, hi)
+            rows, conflicts = to_long(raw, query, month_start, month_end, retrieved_at)
+            stored = store.replace_month(con, rows, month_start, month_end)
             if conflicts:
                 failures += 1
-            print(f"{query:20s} {month}  rows={n_rows}" + (f"  CONFLICT {'; '.join(conflicts)}" if conflicts else ""))
+            print(f"{query:20s} {month}  rows={stored}" + (f"  CONFLICT {'; '.join(conflicts)}" if conflicts else ""))
 
     con.close()
     return failures

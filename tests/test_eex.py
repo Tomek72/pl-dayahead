@@ -22,7 +22,7 @@ ROWS = [
 def write_report(path, rows) -> None:
     """Save rows as EEX lays out a report: titles above, the column names on the sixth row."""
     table = pd.DataFrame(
-        [(pd.Timestamp(d), pd.Timestamp(t), *rest) for d, t, *rest in rows],
+        [(pd.Timestamp(day), pd.Timestamp(result_time), *rest) for day, result_time, *rest in rows],
         columns=["Date", "Time", "Auction Name", "Contract", "Status", "Auction Price €/tCO2", "Auction Volume tCO2"],
     )
     table.to_excel(path, startrow=eex.HEADER_ROW, index=False)

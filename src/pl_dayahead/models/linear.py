@@ -29,15 +29,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from pl_dayahead.features import PRICE_INPUTS
+from pl_dayahead.config import MW_PER_GW
+from pl_dayahead.features import PRICE_INPUTS, model_inputs
 
 WEEKDAYS = {"monday": 0, "tuesday": 1, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}  # Wednesday = baseline
-MW_PER_GW = 1000.0
-
-
-def _features(renewables: str) -> list[str]:
-    """Return the model's input columns, using the given renewables forecast column."""
-    return ["local_hour", "weekday", "is_holiday", *PRICE_INPUTS, "load_fcst", renewables]
 
 
 class LinearByHour:
@@ -45,53 +40,51 @@ class LinearByHour:
 
     name = "linear"
     renewables = "res_fcst_lag_1d"
-    features = _features("res_fcst_lag_1d")
+    features = model_inputs(renewables)
 
     def __init__(self) -> None:
         """Start with no coefficients; fit() estimates one set per hour."""
-        self.coef: dict[int, pd.Series] = {}  # local hour -> coefficient of every regression input
+        self.coefficients_by_hour: dict[int, pd.Series] = {}  # local hour -> coefficient of every regression input
 
     def design(self, X: pd.DataFrame) -> pd.DataFrame:
         """Build the regression inputs: an intercept, the six price inputs, load and renewables in GW, six weekday dummies and the holiday dummy."""
-        d = pd.DataFrame({"intercept": 1.0}, index=X.index)
-        for col in PRICE_INPUTS:
-            d[col] = X[col].astype(float)
-        d["load_gw"] = X["load_fcst"].astype(float) / MW_PER_GW
-        d["res_gw"] = X[self.renewables].astype(float) / MW_PER_GW
+        regressors = pd.DataFrame({"intercept": 1.0}, index=X.index)
+        for column in PRICE_INPUTS:
+            regressors[column] = X[column].astype(float)
+        regressors["load_gw"] = X["load_fcst"].astype(float) / MW_PER_GW
+        regressors["res_gw"] = X[self.renewables].astype(float) / MW_PER_GW
         for name, weekday in WEEKDAYS.items():
-            d[name] = (X["weekday"] == weekday).astype(float)
-        d["holiday"] = X["is_holiday"].astype(float)
-        return d
+            regressors[name] = (X["weekday"] == weekday).astype(float)
+        regressors["holiday"] = X["is_holiday"].astype(float)
+        return regressors
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "LinearByHour":
         """Estimate one least-squares regression for each hour of the day from the training rows."""
-        d = self.design(X)
+        regressors = self.design(X)
         target = y.to_numpy(dtype=float)
         hours = X["local_hour"].to_numpy()
-        self.coef = {}
+        self.coefficients_by_hour = {}
         for hour in np.unique(hours):
-            rows = hours == hour
+            in_hour = hours == hour
             # lstsq copes with a column of zeros (no holiday in the window) and with the duplicate
             # column in the hour-23 regression by splitting the effect equally.
-            beta, *_ = np.linalg.lstsq(d.loc[rows].to_numpy(), target[rows], rcond=None)
-            self.coef[int(hour)] = pd.Series(beta, index=d.columns)
+            solution, *_ = np.linalg.lstsq(regressors.loc[in_hour].to_numpy(), target[in_hour], rcond=None)
+            self.coefficients_by_hour[int(hour)] = pd.Series(solution, index=regressors.columns)
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Forecast each row with the coefficients of its hour. Hours not seen in training get no forecast."""
-        d = self.design(X).to_numpy()
+        regressors = self.design(X).to_numpy()
         hours = X["local_hour"].to_numpy()
-        out = np.full(len(X), np.nan)
-        for hour, beta in self.coef.items():
-            rows = hours == hour
-            out[rows] = d[rows] @ beta.to_numpy()
-        return out
+        forecast = np.full(len(X), np.nan)
+        for hour, coefficients in self.coefficients_by_hour.items():
+            in_hour = hours == hour
+            forecast[in_hour] = regressors[in_hour] @ coefficients.to_numpy()
+        return forecast
 
     def coefficients(self) -> pd.DataFrame:
         """Return the coefficients as a table: one row per hour, one column per input."""
-        table = pd.DataFrame(self.coef).T.sort_index()
-        table.index.name = "hour"
-        return table
+        return pd.DataFrame(self.coefficients_by_hour).T.sort_index().rename_axis("hour")
 
 
 class LinearPapers(LinearByHour):
@@ -104,7 +97,7 @@ class LinearPapers(LinearByHour):
     name = "linear_papers"
     base = "linear"
     renewables = "res_fcst"
-    features = _features("res_fcst")
+    features = model_inputs(renewables)
 
 
 class LinearAsinh(LinearByHour):
@@ -133,8 +126,8 @@ class LinearAsinh(LinearByHour):
     def _transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Return a copy of X with the six price inputs on the transformed scale."""
         X = X.copy()
-        for col in PRICE_INPUTS:
-            X[col] = np.arcsinh((X[col] - self.centre) / self.scale)
+        for column in PRICE_INPUTS:
+            X[column] = np.arcsinh((X[column] - self.centre) / self.scale)
         return X
 
 
@@ -148,21 +141,20 @@ class LinearCarbon(LinearByHour):
 
     name = "linear_eua"
     base = "linear"
-    features = [*_features("res_fcst_lag_1d"), "eua_lag_2d"]
+    features = [*LinearByHour.features, "eua_lag_2d"]
 
     def design(self, X: pd.DataFrame) -> pd.DataFrame:
         """Build the main version's regression inputs and add the carbon price."""
-        d = super().design(X)
-        d["eua"] = X["eua_lag_2d"].astype(float)
-        return d
+        regressors = super().design(X)
+        regressors["eua"] = X["eua_lag_2d"].astype(float)
+        return regressors
 
 
 def latest_coefficients(features: pd.DataFrame, train_days: int = 365) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
     """Fit the main model on the most recent `train_days` days with known prices. Returns the coefficients and the first and last training day."""
-    cols = LinearByHour.features
-    known = features.dropna(subset=cols + ["price"])
+    inputs = LinearByHour.features
+    known = features.dropna(subset=inputs + ["price"])
     last = known["delivery_day"].max()
     first = last - pd.Timedelta(days=train_days - 1)
     window = known[known["delivery_day"] >= first]
-    model = LinearByHour().fit(window[cols], window["price"])
-    return model.coefficients(), first, last
+    return LinearByHour().fit(window[inputs], window["price"]).coefficients(), first, last

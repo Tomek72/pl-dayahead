@@ -16,7 +16,8 @@ import pandas as pd
 
 from pl_dayahead.config import DB_PATH
 
-COLUMNS = ["series", "ts_utc", "resolution_min", "value", "retrieved_at"]
+ENTSOE_COLUMNS = ["series", "ts_utc", "resolution_min", "value", "retrieved_at"]
+AUCTION_COLUMNS = ["auction_date", "result_time_utc", "auction", "price", "volume"]
 
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS entsoe_latest (
@@ -25,19 +26,14 @@ SCHEMA = """
         resolution_min  INTEGER     NOT NULL,  -- minutes the value covers: 15, 30 or 60
         value           DOUBLE      NOT NULL,
         retrieved_at    TIMESTAMPTZ NOT NULL   -- when it was downloaded
-    )
-"""
-
-AUCTION_COLUMNS = ["auction_date", "result_time_utc", "auction", "price", "volume"]
-
-AUCTION_SCHEMA = """
+    );
     CREATE TABLE IF NOT EXISTS eua_auctions (
         auction_date     DATE        NOT NULL,  -- the day of the auction, on the Warsaw (and Frankfurt) clock
         result_time_utc  TIMESTAMPTZ NOT NULL,  -- when the clearing price was set, just after the 11:00 close
         auction          VARCHAR     NOT NULL,  -- EEX's name, such as "Auction 4. Period CAP3 EU"
         price            DOUBLE      NOT NULL,  -- clearing price, EUR per tonne of CO2
         volume           DOUBLE      NOT NULL   -- allowances sold, tonnes of CO2
-    )
+    );
 """
 
 
@@ -48,55 +44,46 @@ def connect(path: Path | str = DB_PATH) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(path))
     con.execute("SET TimeZone = 'UTC'")  # timestamps come back in UTC, never local time
     con.execute(SCHEMA)
-    con.execute(AUCTION_SCHEMA)
     return con
+
+
+def _replace(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], rows: pd.DataFrame,
+             deletes: list[tuple[str, list]]) -> int:
+    """Run the `deletes`, then insert `rows` into `table`, in one transaction, so a failure changes nothing.
+
+    Returns the number of rows stored.
+    """
+    missing = set(columns) - set(rows.columns)
+    if missing:
+        raise ValueError(f"rows lack columns: {sorted(missing)}")
+    con.register("incoming", rows[columns])
+    try:
+        con.begin()
+        for statement, parameters in deletes:
+            con.execute(statement, parameters)
+        names = ", ".join(columns)
+        con.execute(f"INSERT INTO {table} ({names}) SELECT {names} FROM incoming")
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.unregister("incoming")
+    return len(rows)
 
 
 def replace_month(con: duckdb.DuckDBPyConnection, rows: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> int:
     """Store one month of downloaded rows, replacing earlier rows of the same series between start and end.
 
-    The old rows are deleted and the new ones inserted together, so a failure leaves the month as it
-    was. Returns the number of rows stored.
+    An empty download stores nothing and leaves the month as it was. Returns the number of rows stored.
     """
-    missing = set(COLUMNS) - set(rows.columns)
-    if missing:
-        raise ValueError(f"rows lack columns: {sorted(missing)}")
     if rows.empty:
         return 0
-    con.register("incoming", rows[COLUMNS])
-    try:
-        con.begin()
-        for series in rows["series"].unique():
-            con.execute(
-                "DELETE FROM entsoe_latest WHERE series = ? AND ts_utc >= ? AND ts_utc < ?",
-                [str(series), start.to_pydatetime(), end.to_pydatetime()],
-            )
-        cols = ", ".join(COLUMNS)
-        con.execute(f"INSERT INTO entsoe_latest ({cols}) SELECT {cols} FROM incoming")
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.unregister("incoming")
-    return len(rows)
+    deletes = [("DELETE FROM entsoe_latest WHERE series = ? AND ts_utc >= ? AND ts_utc < ?",
+                [str(series), start.to_pydatetime(), end.to_pydatetime()]) for series in rows["series"].unique()]
+    return _replace(con, "entsoe_latest", ENTSOE_COLUMNS, rows, deletes)
 
 
 def replace_auctions(con: duckdb.DuckDBPyConnection, rows: pd.DataFrame) -> int:
-    """Replace every stored EUA auction with `rows`, in one transaction. Returns the number of rows stored."""
-    missing = set(AUCTION_COLUMNS) - set(rows.columns)
-    if missing:
-        raise ValueError(f"rows lack columns: {sorted(missing)}")
-    con.register("incoming", rows[AUCTION_COLUMNS])
-    try:
-        con.begin()
-        con.execute("DELETE FROM eua_auctions")
-        cols = ", ".join(AUCTION_COLUMNS)
-        con.execute(f"INSERT INTO eua_auctions ({cols}) SELECT {cols} FROM incoming")
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.unregister("incoming")
-    return len(rows)
+    """Replace every stored EUA auction with `rows`. Returns the number of rows stored."""
+    return _replace(con, "eua_auctions", AUCTION_COLUMNS, rows, [("DELETE FROM eua_auctions", [])])

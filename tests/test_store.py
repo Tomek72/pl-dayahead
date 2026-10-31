@@ -10,10 +10,10 @@ TS_JAN = pd.Timestamp("2026-01-14 23:00", tz="UTC")  # 00:00 Warsaw on 15 Januar
 TS_FEB = pd.Timestamp("2026-02-14 23:00", tz="UTC")  # 00:00 Warsaw on 15 February
 
 
-def rows(value: float, ts: pd.Timestamp = TS_JAN, series: str = "price_da") -> pd.DataFrame:
+def rows(value: float, timestamp: pd.Timestamp = TS_JAN, series: str = "price_da") -> pd.DataFrame:
     return pd.DataFrame({
         "series": [series],
-        "ts_utc": [ts],
+        "ts_utc": [timestamp],
         "resolution_min": [60],
         "value": [value],
         "retrieved_at": [pd.Timestamp("2026-10-01", tz="UTC")],
@@ -53,7 +53,7 @@ def test_other_series_are_left_alone(con):
 
 
 def test_other_months_are_left_alone(con):
-    store.replace_month(con, rows(90.0, ts=TS_FEB), JAN[1], pd.Timestamp("2026-02-28 23:00", tz="UTC"))
+    store.replace_month(con, rows(90.0, timestamp=TS_FEB), JAN[1], pd.Timestamp("2026-02-28 23:00", tz="UTC"))
     store.replace_month(con, rows(100.0), *JAN)
     assert list(stored(con)["value"]) == [100.0, 90.0]
 

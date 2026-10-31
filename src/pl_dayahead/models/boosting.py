@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-from pl_dayahead.features import PRICE_INPUTS
+from pl_dayahead.features import model_inputs
 
 PARAMS = dict(
     loss="absolute_error",
@@ -31,16 +31,11 @@ PARAMS = dict(
 )
 
 
-def _features(renewables: str) -> list[str]:
-    """Return the model's input columns, using the given renewables forecast column."""
-    return ["local_hour", "weekday", "is_holiday", *PRICE_INPUTS, "load_fcst", renewables]
-
-
 class GradientBoosting:
     """Main version: uses the renewables forecast for the day before, the latest published by 11:00."""
 
     name = "gbm"
-    features = _features("res_fcst_lag_1d")
+    features = model_inputs("res_fcst_lag_1d")
     params = PARAMS
 
     def __init__(self) -> None:
@@ -62,7 +57,7 @@ class GradientBoostingPapers(GradientBoosting):
 
     name = "gbm_papers"
     base = "gbm"
-    features = _features("res_fcst")
+    features = model_inputs("res_fcst")
 
 
 class GradientBoostingDefaults(GradientBoosting):
@@ -83,4 +78,4 @@ class GradientBoostingCarbon(GradientBoosting):
 
     name = "gbm_eua"
     base = "gbm"
-    features = [*_features("res_fcst_lag_1d"), "eua_lag_2d"]
+    features = [*GradientBoosting.features, "eua_lag_2d"]
