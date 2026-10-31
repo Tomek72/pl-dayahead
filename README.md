@@ -273,18 +273,18 @@ src/pl_dayahead/
   ingest/eex.py      download EEX's EU ETS auction results into eua_auctions
   store.py           the DuckDB database: the ENTSO-E series, one row per series and time, and the auctions
   staging.py         one row per UTC hour in the hourly table
-  timeutils.py       delivery days, clock changes, the 11:00 issue time
-  holidays_pl.py     Polish public holidays
+  timeutils.py       delivery days, clock changes, Polish public holidays, the 11:00 issue time
   availability.py    publication rules and the timing check
   features.py        model inputs, each checked by availability.py
   models/            naive.py, linear.py, boosting.py, and the list of models and variants
   backtest.py        daily walk-forward backtest into the predictions table
   evaluate.py        MAE, relative MAE, Diebold-Mariano tests, reports/results.md, the headline chart
   slopes.py          the linear model's latest coefficients
+  style.py           the colours and chart settings shared by evaluate.py and the notebooks
 notebooks/
   01_merit_order.ipynb   how the Polish price behaves, and price against residual load
   02_post_mortem.ipynb   where the forecasts fail: error by price band and the worst days
-tests/                   pytest suite, 124 tests
+tests/                   pytest suite, 125 tests
 ```
 
 ## Reproducing the results

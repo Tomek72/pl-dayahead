@@ -9,21 +9,19 @@ from pl_dayahead.staging import build_hourly
 from pl_dayahead.timeutils import delivery_index
 
 
-def raw_rows(series: str, idx: pd.DatetimeIndex, values, resolution: int) -> pd.DataFrame:
+def raw_rows(series: str, timestamps: pd.DatetimeIndex, values, resolution: int) -> pd.DataFrame:
     """Rows as they come out of entsoe_latest."""
-    return pd.DataFrame(
-        {"series": series, "ts_utc": idx, "resolution_min": resolution, "value": values}
-    )
+    return pd.DataFrame({"series": series, "ts_utc": timestamps, "resolution_min": resolution, "value": values})
 
 
 def full_day(day: date, freq: str = "h", **values) -> pd.DataFrame:
     """All five series for one delivery day, each at a constant value."""
-    idx = delivery_index(day, freq)
-    res = 60 if freq == "h" else 15
+    timestamps = delivery_index(day, freq)
+    resolution = 60 if freq == "h" else 15
     defaults = dict(price_da=100.0, load_da_fcst=20000.0, solar_da_fcst=3000.0,
                     wind_onshore_da_fcst=5000.0, wind_offshore_da_fcst=0.0)
     defaults.update(values)
-    return pd.concat(raw_rows(s, idx, v, res) for s, v in defaults.items())
+    return pd.concat(raw_rows(series, timestamps, value, resolution) for series, value in defaults.items())
 
 
 def test_hourly_rows_pass_through():
@@ -34,10 +32,10 @@ def test_hourly_rows_pass_through():
 
 
 def test_quarter_hours_averaged_to_the_hour():
-    idx = delivery_index(date(2026, 1, 15), "15min")
+    quarter_hours = delivery_index(date(2026, 1, 15), "15min")
     prices = np.tile([80.0, 90.0, 110.0, 120.0], 24)
     raw = pd.concat([full_day(date(2026, 1, 15), "15min").query("series != 'price_da'"),
-                     raw_rows("price_da", idx, prices, 15)])
+                     raw_rows("price_da", quarter_hours, prices, 15)])
     hourly, _ = build_hourly(raw)
     assert len(hourly) == 24
     assert np.allclose(hourly["price"], 100.0)
@@ -45,8 +43,8 @@ def test_quarter_hours_averaged_to_the_hour():
 
 def test_partly_covered_hour_becomes_missing():
     raw = full_day(date(2026, 1, 15), "15min")
-    drop = (raw["series"] == "price_da") & (raw["ts_utc"] == pd.Timestamp("2026-01-15 09:15", tz="UTC"))
-    hourly, report = build_hourly(raw[~drop])
+    dropped = (raw["series"] == "price_da") & (raw["ts_utc"] == pd.Timestamp("2026-01-15 09:15", tz="UTC"))
+    hourly, report = build_hourly(raw[~dropped])
     assert hourly.loc[hourly["ts_utc"] == pd.Timestamp("2026-01-15 09:00", tz="UTC"), "price"].isna().all()
     assert report["missing"]["price"] == 1
     assert report["dropped_hours"] == {"price_da": 1}
@@ -61,7 +59,7 @@ def test_resolution_switch_inside_a_day():
                      quarter_part[quarter_part["ts_utc"] >= switch]])
     hourly, report = build_hourly(raw)
     assert len(hourly) == 24
-    assert all(n == 0 for n in report["missing"].values())
+    assert all(count == 0 for count in report["missing"].values())
 
 
 def test_missing_hour_appears_as_a_row():

@@ -85,35 +85,35 @@ def read_report(source) -> pd.DataFrame:
     missing = set(COLUMN_NAMES) - set(raw.columns)
     if missing:
         raise ValueError(f"report lacks columns: {sorted(missing)}")
-    df = raw[list(COLUMN_NAMES)].rename(columns=COLUMN_NAMES).dropna(subset=["auction_date"])
-    df = df[(df["contract"] == GENERAL_ALLOWANCES) & (df["status"] == "successful")]
-    result_time = pd.to_datetime(df["result_time"]).dt.tz_localize(LOCAL_TZ).dt.tz_convert("UTC")
+    rows = raw[list(COLUMN_NAMES)].rename(columns=COLUMN_NAMES).dropna(subset=["auction_date"])
+    rows = rows[(rows["contract"] == GENERAL_ALLOWANCES) & (rows["status"] == "successful")]
+    result_time = pd.to_datetime(rows["result_time"]).dt.tz_localize(LOCAL_TZ).dt.tz_convert("UTC")
     return pd.DataFrame({
-        "auction_date": pd.to_datetime(df["auction_date"]).dt.date,
+        "auction_date": pd.to_datetime(rows["auction_date"]).dt.date,
         "result_time_utc": result_time,
-        "auction": df["auction"].astype(str),
-        "price": df["price"].astype(float),
-        "volume": df["volume"].astype(float),
+        "auction": rows["auction"].astype(str),
+        "price": rows["price"].astype(float),
+        "volume": rows["volume"].astype(float),
     }).reset_index(drop=True)
 
 
 def read_reports(directory: Path = EEX_DIR) -> pd.DataFrame:
     """Read every yearly report from FIRST_YEAR in `directory`, whether inside an archive or on its own."""
-    frames = []
+    reports = []
     for path in sorted(directory.iterdir()):
         if path.suffix == ".zip":
             with zipfile.ZipFile(path) as archive:
                 for name in archive.namelist():
                     year = report_year(name)
                     if year is not None and year >= FIRST_YEAR:
-                        frames.append(read_report(io.BytesIO(archive.read(name))))
+                        reports.append(read_report(io.BytesIO(archive.read(name))))
         else:
             year = report_year(path.name)
             if year is not None and year >= FIRST_YEAR:
-                frames.append(read_report(path))
-    if not frames:
+                reports.append(read_report(path))
+    if not reports:
         raise FileNotFoundError(f"no auction reports from {FIRST_YEAR} in {directory}")
-    return pd.concat(frames, ignore_index=True)
+    return pd.concat(reports, ignore_index=True)
 
 
 def check(auctions: pd.DataFrame) -> pd.DataFrame:
@@ -141,10 +141,10 @@ def main(argv: list[str] | None = None) -> None:
     auctions = check(read_reports())
     con = store.connect()
     try:
-        n = store.replace_auctions(con, auctions)
+        stored = store.replace_auctions(con, auctions)
     finally:
         con.close()
-    print(f"{n:,} auctions stored, {auctions['auction_date'].min()} to {auctions['auction_date'].max()}")
+    print(f"{stored:,} auctions stored, {auctions['auction_date'].min()} to {auctions['auction_date'].max()}")
 
 
 if __name__ == "__main__":

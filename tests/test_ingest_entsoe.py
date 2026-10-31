@@ -14,26 +14,25 @@ JAN_2026 = month_chunks(date(2026, 1, 1), date(2026, 2, 1))[0]
 
 def warsaw_series(day: date, freq: str = "h", value: float = 100.0) -> pd.Series:
     """Fake entsoe-py output: values indexed in Warsaw local time."""
-    idx = delivery_index(day, freq).tz_convert("Europe/Warsaw")
-    return pd.Series(value, index=idx)
+    return pd.Series(value, index=delivery_index(day, freq).tz_convert("Europe/Warsaw"))
 
 
 def test_month_chunks_follow_warsaw_midnight():
-    (lo, hi), = month_chunks(date(2023, 1, 1), date(2023, 2, 1))
-    assert lo == pd.Timestamp("2022-12-31 23:00", tz="UTC")
-    assert hi == pd.Timestamp("2023-01-31 23:00", tz="UTC")
+    (start, end), = month_chunks(date(2023, 1, 1), date(2023, 2, 1))
+    assert start == pd.Timestamp("2022-12-31 23:00", tz="UTC")
+    assert end == pd.Timestamp("2023-01-31 23:00", tz="UTC")
 
 
 def test_month_chunk_across_autumn_dst():
-    (lo, hi), = month_chunks(date(2026, 10, 1), date(2026, 11, 1))
-    assert lo == pd.Timestamp("2026-09-30 22:00", tz="UTC")  # CEST start
-    assert hi == pd.Timestamp("2026-10-31 23:00", tz="UTC")  # CET end
+    (start, end), = month_chunks(date(2026, 10, 1), date(2026, 11, 1))
+    assert start == pd.Timestamp("2026-09-30 22:00", tz="UTC")  # CEST start
+    assert end == pd.Timestamp("2026-10-31 23:00", tz="UTC")  # CET end
 
 
 def test_month_chunks_cover_range_without_gaps():
     chunks = month_chunks(date(2023, 1, 1), date(2026, 10, 1))
     assert len(chunks) == 45
-    assert all(prev[1] == nxt[0] for prev, nxt in zip(chunks, chunks[1:]))
+    assert all(earlier[1] == later[0] for earlier, later in zip(chunks, chunks[1:]))
 
 
 def test_partial_months_at_both_ends():
@@ -61,8 +60,8 @@ def test_rows_outside_chunk_are_trimmed():
 
 
 def test_dataframe_columns_renamed_and_unknown_slugified():
-    idx = delivery_index(date(2026, 1, 15), "15min").tz_convert("Europe/Warsaw")
-    raw = pd.DataFrame({"Solar": 1.0, "Wind Onshore": 2.0, "Biomass Other": 3.0}, index=idx)
+    quarter_hours = delivery_index(date(2026, 1, 15), "15min").tz_convert("Europe/Warsaw")
+    raw = pd.DataFrame({"Solar": 1.0, "Wind Onshore": 2.0, "Biomass Other": 3.0}, index=quarter_hours)
     rows, _ = to_long(raw, "wind_solar_da_fcst", *JAN_2026, RETRIEVED)
     assert set(rows["series"]) == {"solar_da_fcst", "wind_onshore_da_fcst", "biomass_other_da_fcst"}
     assert set(rows["resolution_min"]) == {15}
@@ -102,19 +101,19 @@ def test_resolution_switch_inside_a_month():
     hourly = delivery_index(date(2024, 6, 12), "h")
     quarter = delivery_index(date(2024, 6, 13), "15min")
     switch = pd.Timestamp("2024-06-13 00:00", tz="UTC")
-    idx = hourly.append(quarter[quarter < switch][::4]).append(quarter[quarter >= switch])
-    raw = pd.Series(1.0, index=idx.tz_convert("Europe/Warsaw"))
+    switching = hourly.append(quarter[quarter < switch][::4]).append(quarter[quarter >= switch])
+    raw = pd.Series(1.0, index=switching.tz_convert("Europe/Warsaw"))
     chunk = month_chunks(date(2024, 6, 12), date(2024, 6, 14))[0]
     rows, _ = to_long(raw, "load_da_fcst", *chunk, RETRIEVED)
-    by_res = rows.groupby("resolution_min")["ts_utc"].agg(["min", "max", "count"])
-    assert by_res.loc[60, "max"] == pd.Timestamp("2024-06-12 23:00", tz="UTC")
-    assert by_res.loc[15, "min"] == switch
-    assert by_res.loc[60, "count"] == 24 + 2
+    by_resolution = rows.groupby("resolution_min")["ts_utc"].agg(["min", "max", "count"])
+    assert by_resolution.loc[60, "max"] == pd.Timestamp("2024-06-12 23:00", tz="UTC")
+    assert by_resolution.loc[15, "min"] == switch
+    assert by_resolution.loc[60, "count"] == 24 + 2
 
 
 def test_short_gap_in_quarter_hourly_data():
-    idx = delivery_index(date(2026, 1, 15), "15min")
-    raw = pd.Series(1.0, index=idx.delete([41, 42, 43]).tz_convert("Europe/Warsaw"))
+    quarter_hours = delivery_index(date(2026, 1, 15), "15min")
+    raw = pd.Series(1.0, index=quarter_hours.delete([41, 42, 43]).tz_convert("Europe/Warsaw"))
     chunk = month_chunks(date(2026, 1, 15), date(2026, 1, 16))[0]
     rows, _ = to_long(raw, "load_da_fcst", *chunk, RETRIEVED)
     assert set(rows["resolution_min"]) == {15}  # the rows either side of the gap stay 15-minute

@@ -1615,7 +1615,6 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "python-dotenv" },
-    { name = "pytz" },
     { name = "scikit-learn" },
 ]
 
@@ -1634,7 +1633,6 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
-    { name = "pytz", specifier = ">=2026.5" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
 ]
 
