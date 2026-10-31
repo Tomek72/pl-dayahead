@@ -1,4 +1,4 @@
-"""The look every chart and table shares, in evaluate.py and both notebooks: colours, settings and saving.
+"""The look every chart and table shares, in evaluate.py and both notebooks: colours, settings, saving and captions.
 
 The colours come from a palette tested for colour-blind readability. Each model keeps one colour in
 every chart, and its papers' setup takes a lighter step of the same hue.
@@ -42,6 +42,13 @@ def save(fig, name: str, source: str, rect: tuple = (0, 0.04, 1, 1)) -> None:
     fig.tight_layout(rect=rect)
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIG_DIR / name, dpi=150)
+
+
+def captioned(styler, caption: str):
+    """A table under its caption as HTML. GitHub's notebook viewer drops a Styler's <caption> but keeps a paragraph."""
+    from IPython.display import HTML  # IPython comes with Jupyter; the package itself does not need it
+
+    return HTML(f"<p><b>{caption}</b></p>\n{styler.to_html()}")
 
 
 def whole(value: float) -> str:

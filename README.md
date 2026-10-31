@@ -66,7 +66,7 @@ The inputs are those of the expert model of Ziel and Weron (2018, Eq. 10), with 
 |---|---|
 | $p_{d-1,h}$, $p_{d-2,h}$, $p_{d-7,h}$ | Price at hour h one, two and seven days before d |
 | $p^{\text{last}}_{d-1}$ | Price at 23:00 on d−1, the hour just before d |
-| $p^{\min}_{d-1}$, $p^{\max}_{d-1}$ | Lowest and highest price of d−1 |
+| $p_{d-1}^{\min}$, $p_{d-1}^{\max}$ | Lowest and highest price of d−1 |
 | $L_{d,h}$ | Load forecast for hour h of d, in GW |
 | $R_{d-1,h}$ | Wind plus solar forecast for hour h of d−1, in GW: the latest due by 11:00 |
 | $R_{d,h}$ | Wind plus solar forecast for hour h of d, in GW: the papers' setup only |
@@ -139,7 +139,7 @@ Each variant changes one thing about a main model. In the papers' setup, `linear
 `linear_asinh` fits the linear model to asinh-transformed prices, as Ziel and Weron do. The target and the six price inputs are transformed with $m$, the median of the training window's prices, and $s$, 1.4826 times their median absolute deviation, and each forecast is transformed back:
 
 ```math
-z = \operatorname{asinh}\!\left(\frac{p - m}{s}\right), \qquad \hat p = m + s \sinh(\hat z)
+z = \text{asinh}\!\left(\frac{p - m}{s}\right), \qquad \hat p = m + s \sinh(\hat z)
 ```
 
 ## 4. Forecast evaluation
