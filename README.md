@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This project forecasts the 24 hourly prices of the Polish day-ahead auction at 11:00 Warsaw time on the day before delivery, one hour before the auction closes, using only information published by then. A linear expert model and gradient-boosted trees are tested against two naive benchmarks in a walk-forward backtest over 1,028 delivery days, from 1 January 2024 to 24 October 2026. Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark, to 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34; the difference between the two models is not significant. A post-mortem in [notebook 02](notebooks/02_post_mortem.ipynb) finds that the trees' daily bias follows the change from the wind and solar forecast they saw at 11:00, the one for the day before delivery, to the delivery day's own, published at 18:00 (Spearman rank correlation 0.59 over all days).
+This project forecasts the 24 hourly prices of the Polish day-ahead auction at 11:00 Warsaw time on the day before delivery, one hour before the auction closes, using only information published by then. A linear expert model and gradient-boosted trees are tested against two naive benchmarks in a walk-forward backtest over 1,028 delivery days, from 1 January 2024 to 24 October 2026. Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark, to 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34; the difference between the two models is not significant. An error analysis in [notebook 02](notebooks/02_error_analysis.ipynb) finds that the trees' daily bias follows the change from the wind and solar forecast they saw at 11:00, the one for the day before delivery, to the delivery day's own, published at 18:00 (Spearman rank correlation 0.59 over all days).
 
 ![Mean absolute error by model](reports/figures/mae_by_model.png)
 
@@ -82,7 +82,7 @@ Load and renewables are the outside inputs because the price follows residual lo
 
 ![Price against residual load](reports/figures/merit_order.png)
 
-*Figure 2. Price against the residual load forecast, one panel per year. From `notebooks/01_merit_order.ipynb`.*
+*Figure 2. Price against the residual load forecast, one panel per year. From `notebooks/01_exploratory_data_analysis.ipynb`.*
 
 ### 3.2 Benchmarks
 
@@ -240,17 +240,17 @@ Every table, including results by period, year, month and local hour and the ful
 
 ![Share of hours and of error by price band](reports/figures/error_by_price_level.png)
 
-*Figure 3. Share of hours and share of the trees' error by actual price band. From `notebooks/02_post_mortem.ipynb`.*
+*Figure 3. Share of hours and share of the trees' error by actual price band. From `notebooks/02_error_analysis.ipynb`.*
 
-**The ten worst days, the worst 1% of the 1,028 by gbm's daily MAE, split evenly between forecasts too low and too high.** On five, prices were high all day. On the other five the price fell, four of them with strong wind, and on those five the papers' setup averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia.
+**The ten worst days, the worst 1% of the 1,028 by gbm's daily MAE, split evenly between under- and over-forecasts.** On five, prices were high all day. On the other five the price fell, four of them with strong wind, and on those five the papers' setup averaged an MAE of 44.8 EUR/MWh against gbm's 67.2. On 12 and 13 January 2026 Poland peaked 255 and 240 EUR/MWh above both Germany and Czechia.
 
-**gbm's daily bias follows the renewables forecast it could not see (rank correlation 0.59).** The daily bias is the mean of forecast minus actual over the day. Over all 1,028 days, its Spearman rank correlation with the change from the forecast gbm saw to day d's own is 0.59, against 0.19 for the papers' setup (1 would mean the bias always rises with the change). On nine of the ten worst days the bias had the same sign as the change. The analysis is in [`notebooks/02_post_mortem.ipynb`](notebooks/02_post_mortem.ipynb).
+**gbm's daily bias follows the renewables forecast it could not see (rank correlation 0.59).** The daily bias is the mean of forecast minus actual over the day. Over all 1,028 days, its Spearman rank correlation with the change from the forecast gbm saw to day d's own is 0.59, against 0.19 for the papers' setup (1 would mean the bias always rises with the change). On nine of the ten worst days the bias had the same sign as the change. The analysis is in [`notebooks/02_error_analysis.ipynb`](notebooks/02_error_analysis.ipynb).
 
 ## 6. Limitations
 
 Assumptions 1 and 2 can be wrong in both directions. The stored load forecast may be a later update than the version public at 11:00, which would flatter the models. Day d's renewables forecast may have been public before 11:00, which would put the papers' setup within reach. The archive cannot settle either question.
 
-The main models see only Polish electricity data, with no fuel, carbon, flow or outage data, so they react to a cost shock only once it shows up in prices; of these inputs, only carbon is tested. Trees cannot forecast outside the price range of their training window; the linear model can, but in this backtest it was also far too low on spikes: in hours at 250 EUR/MWh and above its bias was −92.9 EUR/MWh, against −104.6 for the trees. The target is hourly, while the auction has traded 15-minute products since October 2025, and the results cover one market and one period, 2024 to 2026.
+The main models see only Polish electricity data, with no fuel, carbon, flow or outage data, so they react to a cost shock only once it shows up in prices; of these inputs, only carbon is tested. Trees cannot forecast outside the price range of their training window; the linear model can, but in this backtest it also under-forecast spikes heavily: in hours at 250 EUR/MWh and above its bias was −92.9 EUR/MWh, against −104.6 for the trees. The target is hourly, while the auction has traded 15-minute products since October 2025, and the results cover one market and one period, 2024 to 2026.
 
 The forecast is a point forecast, one number per hour with no range of likely prices. It is scored on accuracy alone, and what it would be worth to a desk in money, for example as bids in the auction, is not measured.
 
@@ -284,11 +284,11 @@ src/pl_dayahead/
   backtest.py        daily walk-forward backtest into the predictions table
   evaluate.py        MAE, relative MAE, Diebold-Mariano tests, reports/results.md, the headline chart
   slopes.py          the linear model's latest coefficients
-  style.py           the colours and chart settings shared by evaluate.py and the notebooks
+  style.py           the colours, chart settings and table captions shared by evaluate.py and the notebooks
 notebooks/
-  01_merit_order.ipynb   how the Polish price behaves, and price against residual load
-  02_post_mortem.ipynb   where the forecasts fail: error by price band and the worst days
-tests/                   pytest suite, 125 tests
+  01_exploratory_data_analysis.ipynb   price level, intraday profile, negative prices and the supply curve
+  02_error_analysis.ipynb              where the forecasts fail: error by time and price level, the worst days, drivers
+tests/                                 pytest suite, 125 tests
 ```
 
 ## Reproducing the results
