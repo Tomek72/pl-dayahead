@@ -138,10 +138,6 @@ uv run pytest
 
 The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant in about 35 minutes; the four tree models take most of that time, because each fits 1,028 models. Open the notebooks with `uv run jupyter lab`.
 
-## Use of AI tools
-
-The code and drafts of the text were written with an AI coding assistant (Claude). The design decisions are mine, each one tied to the reference papers, and the tests check the rules they set.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
