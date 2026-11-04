@@ -1,12 +1,15 @@
 from datetime import date
 
+import duckdb
 import numpy as np
 import pandas as pd
+import pytest
 from helpers import hours_between
 
 from pl_dayahead import store
-from pl_dayahead.backtest import save, walk_forward
+from pl_dayahead.backtest import models_using_late_inputs, save, walk_forward
 from pl_dayahead.features import build_features
+from pl_dayahead.models import MODELS
 from pl_dayahead.models.naive import NaiveSimilarDay, NaiveWeekly
 
 
@@ -89,6 +92,28 @@ def test_save_replaces_a_models_rows():
     first = con.sql("SELECT delivery_day, trained_from, trained_to FROM predictions ORDER BY ts_utc LIMIT 1")
     assert first.fetchone() == (date(2024, 3, 1), date(2023, 3, 2), date(2024, 2, 29))
     con.close()
+
+
+def test_a_failed_save_keeps_the_earlier_forecasts():
+    con = store.connect(":memory:")
+    predictions = walk_forward(feature_table(), NaiveWeekly, first_test_day=date(2024, 3, 1))
+    save(con, predictions)
+    with pytest.raises(duckdb.ConversionException):  # the insert fails after the delete
+        save(con, predictions.assign(prediction="not a number"))
+    assert con.sql("SELECT count(*) FROM predictions").fetchone()[0] == len(predictions)
+    con.close()
+
+
+def test_only_the_papers_setup_may_use_an_input_published_after_11(monkeypatch):
+    assert models_using_late_inputs(list(MODELS), ["renewables_fcst"]) == []
+
+    class DayD:
+        """A model given day d's renewables forecast without being the papers' setup."""
+        name = "day_d"
+        features = ["renewables_fcst"]
+
+    monkeypatch.setitem(MODELS, "day_d", DayD)
+    assert models_using_late_inputs(list(MODELS), ["renewables_fcst"]) == ["day_d"]
 
 
 def test_missing_feature_gives_no_forecast():

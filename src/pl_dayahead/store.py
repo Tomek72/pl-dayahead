@@ -5,6 +5,9 @@ Downloading a month again replaces that month's rows, so the table never holds t
 
 The eua_auctions table holds one row per EU ETS primary auction of general allowances, from EEX's
 reports (ingest/eex.py). Each download replaces the whole table.
+
+The predictions table holds one row per model and hour from the backtest (backtest.py). Each run of a
+model replaces that model's rows.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from pl_dayahead.config import DB_PATH
 
 ENTSOE_COLUMNS = ["series", "ts_utc", "resolution_min", "value", "retrieved_at"]
 AUCTION_COLUMNS = ["auction_date", "result_time_utc", "auction", "price", "volume"]
+PREDICTION_COLUMNS = ["model", "ts_utc", "delivery_day", "issue_time_utc", "trained_from", "trained_to", "prediction",
+                      "actual", "run_at"]
 
 SCHEMA = """
     CREATE TABLE IF NOT EXISTS entsoe_latest (
@@ -33,6 +38,17 @@ SCHEMA = """
         auction          VARCHAR     NOT NULL,  -- EEX's name, such as "Auction 4. Period CAP3 EU"
         price            DOUBLE      NOT NULL,  -- clearing price, EUR per tonne of CO2
         volume           DOUBLE      NOT NULL   -- allowances sold, tonnes of CO2
+    );
+    CREATE TABLE IF NOT EXISTS predictions (
+        model           VARCHAR,      -- the model's name in models/__init__.py
+        ts_utc          TIMESTAMPTZ,  -- start of the hour forecast
+        delivery_day    DATE,         -- the Warsaw delivery day of that hour
+        issue_time_utc  TIMESTAMPTZ,  -- 11:00 Warsaw time on the day before
+        trained_from    DATE,         -- first and last day of the training window
+        trained_to      DATE,
+        prediction      DOUBLE,       -- EUR/MWh, empty if an input was missing
+        actual          DOUBLE,       -- the price, EUR/MWh
+        run_at          TIMESTAMPTZ   -- when the backtest ran
     );
 """
 
@@ -87,3 +103,9 @@ def replace_month(con: duckdb.DuckDBPyConnection, rows: pd.DataFrame, start: pd.
 def replace_auctions(con: duckdb.DuckDBPyConnection, rows: pd.DataFrame) -> int:
     """Replace every stored EUA auction with `rows`. Returns the number of rows stored."""
     return _replace(con, "eua_auctions", AUCTION_COLUMNS, rows, [("DELETE FROM eua_auctions", [])])
+
+
+def replace_predictions(con: duckdb.DuckDBPyConnection, rows: pd.DataFrame) -> int:
+    """Replace the stored forecasts of the models in `rows` with `rows`. Returns the number of rows stored."""
+    deletes = [("DELETE FROM predictions WHERE model = ?", [str(model)]) for model in rows["model"].unique()]
+    return _replace(con, "predictions", PREDICTION_COLUMNS, rows, deletes)

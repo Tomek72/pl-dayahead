@@ -91,6 +91,13 @@ def test_conflicting_duplicates_not_stored():
     assert conflicts == ["price_da: 24 timestamps with more than one value"]
 
 
+def test_a_single_row_is_not_stored():
+    raw = warsaw_series(date(2026, 1, 15), "15min").iloc[:1]  # one quarter-hour, with no neighbour to measure from
+    rows, conflicts = to_long(raw, "price_da", *JAN_2026, RETRIEVED)
+    assert rows.empty
+    assert conflicts == ["price_da: no two rows are 15, 30 or 60 minutes apart, so the minutes each covers are unknown"]
+
+
 def test_series_name_mapping():
     assert series_name("Forecasted Load") == "load_da_fcst"
     assert series_name("Wind Offshore") == "wind_offshore_da_fcst"

@@ -39,7 +39,7 @@ class LinearByHour:
     """Main version: uses the renewables forecast for the day before, the latest published by 11:00."""
 
     name = "linear"
-    renewables = "res_fcst_lag_1d"
+    renewables = "renewables_fcst_lag_1d"
     features = model_inputs(renewables)
 
     def __init__(self) -> None:
@@ -52,7 +52,7 @@ class LinearByHour:
         for column in PRICE_INPUTS:
             regressors[column] = X[column].astype(float)
         regressors["load_gw"] = X["load_fcst"].astype(float) / MW_PER_GW
-        regressors["res_gw"] = X[self.renewables].astype(float) / MW_PER_GW
+        regressors["renewables_gw"] = X[self.renewables].astype(float) / MW_PER_GW
         for name, weekday in WEEKDAYS.items():
             regressors[name] = (X["weekday"] == weekday).astype(float)
         regressors["holiday"] = X["is_holiday"].astype(float)
@@ -96,7 +96,8 @@ class LinearPapers(LinearByHour):
 
     name = "linear_papers"
     base = "linear"
-    renewables = "res_fcst"
+    papers_setup = True
+    renewables = "renewables_fcst"
     features = model_inputs(renewables)
 
 

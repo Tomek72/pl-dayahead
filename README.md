@@ -20,7 +20,7 @@ The method follows three reference papers, Lago et al. (2021), Ziel and Weron (2
 
 ### 2.1 Sources and processing
 
-The electricity data comes from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for the Polish bidding zone: day-ahead prices (12.1.D), the day-ahead total load forecast (6.1.B) and the day-ahead wind and solar generation forecast (14.1.D), with wind onshore plus offshore. It starts on 1 January 2023, which keeps the 2022 gas crisis out of training and leaves one full year before the first test day.
+The electricity data comes from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for the Polish bidding zone: day-ahead prices (12.1.D), the day-ahead total load forecast (6.1.B) and the day-ahead wind and solar generation forecast (14.1.D), with wind onshore plus offshore. It starts on 1 January 2023, which keeps the 2022 gas crisis out of training and leaves one full year before the first test day. The day-ahead prices of Germany-Luxembourg and Czechia, from the same source, serve only the check of market coupling in notebook 02.
 
 Values are stored hourly. Quarter-hour values are averaged into hours, and an hour counts only if its values are all the same length and together cover 60 minutes; otherwise it is missing.
 
@@ -76,7 +76,7 @@ The inputs are those of the expert model of Ziel and Weron (2018, Eq. 10), with 
 
 Hours follow the Warsaw clock. When the clocks go forward, the missing 02:00 of an earlier day is filled with the mean of 01:00 and 03:00; when they go back, its two 02:00 values are averaged, as in Ziel and Weron. The lowest and highest price of d−1 are left missing if any hour of d−1 is missing. The holiday dummy is my addition. Ziel and Weron leave holidays out to keep the model small, but fitted on the latest year it lowers the forecast in all 24 hours, by up to 30.4 EUR/MWh at 14:00 (`slopes.py`).
 
-Every input is checked against the publication times in Table 1 when the input table is built (`availability.py`), and the build stops if one is late. Three truncation tests check the data as well as the rule. Deleting every price from day d onwards must leave every input for day d unchanged; deleting day d's renewables forecast too must leave every input outside the papers' setup unchanged; and deleting every auction from d−1 onwards must leave the carbon input unchanged.
+Every input is checked against the publication times in Table 1 when the input table is built (`availability.py`): the build stops if one is late, apart from day d's renewables forecast, which the backtest allows only in the papers' setup. Three truncation tests check the data as well as the rule. Deleting every price from day d onwards must leave every input for day d unchanged; deleting day d's renewables forecast too must leave every input outside the papers' setup unchanged; and deleting every auction from d−1 onwards must leave the carbon input unchanged.
 
 Load and renewables are the outside inputs because the price follows residual load, load minus wind and solar: the more demand is left for conventional plants, the further up the merit order the auction clears (Figure 2). In notebook 01, Spearman's rank correlation between price and residual load was 0.69 to 0.86 in the years 2023 to 2026, against 0.18 to 0.54 for load alone.
 
@@ -209,7 +209,7 @@ Every table, including results by period, year, month and local hour and the ful
 | Similar-day naive (`naive_similar_day`) | 27.34 | 0.84 | 0% |
 | Weekly naive (`naive_weekly`) | 32.56 | 1.00 | +19.1% |
 
-**Both models cut the error by 22% against the similar-day naive, and they are tied (p = 0.273).** They are the only pair the Diebold-Mariano test cannot separate; every other pair differs with p < 0.001. The trees lead in 2024 (18.59 against 19.09 EUR/MWh) and trail slightly in 2025 and 2026.
+**Both models cut the error by 22% against the similar-day naive, and they are tied.** They are the only pair the Diebold-Mariano test cannot separate: the one-sided p-value is 0.273 for the trees being more accurate and 0.727 for the linear model, while every other pair differs with p < 0.001. The trees lead in 2024 (18.59 against 19.09 EUR/MWh) and trail slightly in 2025 and 2026.
 
 **The weekly naive's MAE rose from 29.86 to 36.99 EUR/MWh after 1 October 2025, and every other model's error rose with it.** The trees' relative MAE was 0.65 in both periods, so their error grew in step with the benchmark's. The split cannot separate the switch to 15-minute products from 2026 being a more volatile year.
 
@@ -275,7 +275,7 @@ Data: ENTSO-E Transparency Platform; EEX, [EUA primary auction reports](https://
 src/pl_dayahead/
   ingest/entsoe.py   download from ENTSO-E, one month at a time, into entsoe_latest
   ingest/eex.py      download EEX's EU ETS auction results into eua_auctions
-  store.py           the DuckDB database: the ENTSO-E series, one row per series and time, and the auctions
+  store.py           the DuckDB database: the ENTSO-E series, one row per series and time, the auctions and the forecasts
   staging.py         one row per UTC hour in the hourly table
   timeutils.py       delivery days, clock changes, Polish public holidays, the 11:00 issue time
   availability.py    publication rules and the timing check
@@ -288,7 +288,7 @@ src/pl_dayahead/
 notebooks/
   01_exploratory_data_analysis.ipynb   price level, intraday profile, negative prices and the supply curve
   02_error_analysis.ipynb              where the forecasts fail: error by time and price level, the worst days, drivers
-tests/                                 pytest suite, 125 tests
+tests/                                 pytest suite, 131 tests
 ```
 
 ## Reproducing the results
@@ -311,7 +311,7 @@ uv run python -m pl_dayahead.evaluate
 uv run pytest
 ```
 
-The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant in about 35 minutes; the four tree models take most of that time, because each fits 1,028 models. Open the notebooks with `uv run jupyter lab`; notebook 02 also downloads neighbouring prices, so it needs the token too.
+The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant in about 35 minutes; the four tree models take most of that time, because each fits 1,028 models. Open the notebooks with `uv run jupyter lab`.
 
 ## Use of AI tools
 

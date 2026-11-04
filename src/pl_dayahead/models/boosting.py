@@ -35,7 +35,7 @@ class GradientBoosting:
     """Main version: uses the renewables forecast for the day before, the latest published by 11:00."""
 
     name = "gbm"
-    features = model_inputs("res_fcst_lag_1d")
+    features = model_inputs("renewables_fcst_lag_1d")
     params = PARAMS
 
     def __init__(self) -> None:
@@ -57,7 +57,8 @@ class GradientBoostingPapers(GradientBoosting):
 
     name = "gbm_papers"
     base = "gbm"
-    features = model_inputs("res_fcst")
+    papers_setup = True
+    features = model_inputs("renewables_fcst")
 
 
 class GradientBoostingDefaults(GradientBoosting):

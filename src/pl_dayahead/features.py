@@ -31,8 +31,8 @@ SPECS = [
     FeatureSpec("price_min_1d", "price", -1, "min"),
     FeatureSpec("price_max_1d", "price", -1, "max"),
     FeatureSpec("load_fcst", "load_fcst", 0),
-    FeatureSpec("res_fcst", "res_fcst", 0),  # the papers' setup: due at 18:00 on d-1, after the forecast
-    FeatureSpec("res_fcst_lag_1d", "res_fcst", -1),  # the main models: published by 11:00
+    FeatureSpec("renewables_fcst", "renewables_fcst", 0),  # the papers' setup: due at 18:00 on d-1, after the forecast
+    FeatureSpec("renewables_fcst_lag_1d", "renewables_fcst", -1),  # the main models: published by 11:00
     FeatureSpec("eua_lag_2d", "eua", -2, "latest"),  # the carbon variants: auctions on d-1 end after 11:00
 ]
 MAX_AUCTION_AGE_DAYS = 31  # the auctions pause for up to four weeks over New Year; an older price means a missing report
@@ -48,21 +48,21 @@ def model_inputs(renewables: str) -> list[str]:
     return [*CALENDAR, *PRICE_INPUTS, "load_fcst", renewables]
 
 
-def _day_hour_grid(hours: pd.DataFrame, column: str) -> pd.DataFrame:
-    """Reshape a column into one row per delivery day and one column per hour, 0 to 23, with the clock-change rules above."""
-    grid = hours.pivot_table(index="delivery_day", columns="local_hour", values=column, aggfunc="mean")
-    grid = grid.reindex(columns=range(24))
-    # Spring clock change: the day has 23 hours and no 02:00. Use the average of 01:00 and 03:00.
-    hours_per_day = hours.groupby("delivery_day").size()
-    spring = hours_per_day.index[hours_per_day == 23].intersection(grid.index)
-    grid.loc[spring, 2] = (grid.loc[spring, 1] + grid.loc[spring, 3]) / 2
-    return grid
-
-
 def _hours_in_day(day: pd.Timestamp) -> int:
     """Return the number of hours in a Warsaw delivery day: 23, 24 or 25."""
     start, end = delivery_day_bounds(day.date())
     return int((end - start) / pd.Timedelta(hours=1))
+
+
+def _day_hour_grid(hours: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Reshape a column into one row per delivery day and one column per hour, 0 to 23, with the clock-change rules above."""
+    grid = hours.pivot_table(index="delivery_day", columns="local_hour", values=column, aggfunc="mean")
+    grid = grid.reindex(columns=range(24))
+    # Spring clock change, taken from the calendar so that a partial first or last day cannot pass for one:
+    # the day has 23 hours and no 02:00. Use the average of 01:00 and 03:00.
+    spring = [day for day in grid.index if _hours_in_day(day) == 23]
+    grid.loc[spring, 2] = (grid.loc[spring, 1] + grid.loc[spring, 3]) / 2
+    return grid
 
 
 def _whole_day_stat(hours: pd.DataFrame, column: str, agg: str) -> pd.Series:
@@ -106,20 +106,23 @@ def build_features(hourly: pd.DataFrame, auctions: pd.DataFrame | None = None) -
     features["local_hour"] = calendar["local_hour"].to_numpy()
     features["weekday"] = calendar["weekday"].to_numpy()
     features["is_holiday"] = is_holiday(features["delivery_day"]).to_numpy()
-    features["res_fcst"] = features["wind_fcst"] + features["solar_fcst"]  # missing if either part is missing
+    features["renewables_fcst"] = features["wind_fcst"] + features["solar_fcst"]  # missing if either part is missing
     issue_times = {day: issue_time_utc(day.date()) for day in features["delivery_day"].drop_duplicates()}
     features["issue_time_utc"] = features["delivery_day"].map(issue_times)
+
+    # One day-by-hour grid per series that an input reads from an earlier day, shared by all such inputs.
+    lagged = {spec.series for spec in SPECS if spec.agg in ("hour", "last") and spec.day_offset != 0}
+    grids = {series: _day_hour_grid(features, series) for series in lagged}
 
     for spec in SPECS:
         source_day = features["delivery_day"] + pd.Timedelta(days=spec.day_offset)
         if spec.agg == "hour" and spec.day_offset == 0:
             features[spec.name] = features[spec.series]  # the target hour itself
         elif spec.agg == "hour":
-            by_day_and_hour = _day_hour_grid(features, spec.series).stack()
             wanted = pd.MultiIndex.from_arrays([source_day, features["local_hour"]])
-            features[spec.name] = by_day_and_hour.reindex(wanted).to_numpy()
+            features[spec.name] = grids[spec.series].stack().reindex(wanted).to_numpy()
         elif spec.agg == "last":
-            features[spec.name] = source_day.map(_day_hour_grid(features, spec.series)[23]).to_numpy()
+            features[spec.name] = source_day.map(grids[spec.series][23]).to_numpy()
         elif spec.agg == "latest":
             features[spec.name] = _latest_auction_price(auctions, source_day)
         else:

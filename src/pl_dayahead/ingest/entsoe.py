@@ -1,4 +1,5 @@
-"""Download Polish prices, load forecasts and wind and solar forecasts from ENTSO-E, one month at a time.
+"""Download Polish prices, load forecasts and wind and solar forecasts from ENTSO-E, one month at a time,
+and the prices of Germany-Luxembourg and Czechia for notebook 02's check of market coupling.
 
 Run from the project root (add --help to see the options):
 
@@ -42,6 +43,9 @@ QUERIES = {
         BIDDING_ZONE, start=start, end=end, process_type="A01"),
     "wind_solar_da_fcst": lambda client, start, end: client.query_wind_and_solar_forecast(
         BIDDING_ZONE, start=start, end=end, process_type="A01"),
+    # Neighbouring bidding zones, for notebook 02 only; no model uses them.
+    "price_da_de_lu": lambda client, start, end: client.query_day_ahead_prices("DE_LU", start=start, end=end),
+    "price_da_cz": lambda client, start, end: client.query_day_ahead_prices("CZ", start=start, end=end),
 }
 
 
@@ -69,7 +73,8 @@ def row_resolution(timestamps: pd.Series) -> pd.Series | None:
 
     Each row gets the smaller of the gaps to the row before and the row after, counting only gaps of
     15, 30 or 60 minutes. This handles a series that switches from hourly to 15-minute values within a
-    month, as the Polish forecasts did on 13 June 2024. Returns None if no gap has a valid length.
+    month, as the Polish forecasts did on 13 June 2024. Returns None if no gap has a valid length,
+    which includes a single row: it has no neighbour to measure from.
     """
     minute = pd.Timedelta(minutes=1)
     gap_before = timestamps.diff() / minute
@@ -91,9 +96,9 @@ def to_long(
     """Turn one month of downloaded data into rows for entsoe_latest: one row per series and time.
 
     Each row holds the value, the minutes it covers and the download time. Exact duplicates are
-    dropped. If a series still has two values for the same time, none of that series is stored and a
-    message is returned for it, because silently picking one would hide a data problem. Returns the
-    rows and the list of such messages.
+    dropped. If a series still has two values for the same time, or the minutes its values cover
+    cannot be told, none of that series is stored and a message is returned for it, because silently
+    guessing would hide a data problem. Returns the rows and the list of such messages.
     """
     frame = raw.to_frame(default_name) if isinstance(raw, pd.Series) else raw.rename(columns=series_name)
     frame = frame.copy()
@@ -115,13 +120,11 @@ def to_long(
         if repeated:
             conflicts.append(f"{name}: {repeated} timestamps with more than one value")
             continue
-        if len(series_rows) == 1:
-            resolution = pd.Series(60, index=series_rows.index)
-        else:
-            resolution = row_resolution(series_rows["ts_utc"])
-            if resolution is None:
-                conflicts.append(f"{name}: no gap between rows is 15, 30 or 60 minutes")
-                continue
+        resolution = row_resolution(series_rows["ts_utc"])
+        if resolution is None:
+            conflicts.append(f"{name}: no two rows are 15, 30 or 60 minutes apart, "
+                             "so the minutes each covers are unknown")
+            continue
         kept.append(series_rows.assign(resolution_min=resolution))
 
     rows = pd.concat(kept) if kept else long.iloc[0:0].assign(resolution_min=[])

@@ -23,15 +23,15 @@ def inputs(n_days: int = 60, seed: int = 0) -> pd.DataFrame:
         "is_holiday": np.repeat(rng.random(n_days) < 0.1, 24),
         **{column: rng.normal(100, 30, count) for column in PRICE_INPUTS},
         "load_fcst": rng.uniform(13000, 25000, count),
-        "res_fcst": rng.uniform(0, 20000, count),
-        "res_fcst_lag_1d": rng.uniform(0, 20000, count),
+        "renewables_fcst": rng.uniform(0, 20000, count),
+        "renewables_fcst_lag_1d": rng.uniform(0, 20000, count),
     })
     last_hour = X["local_hour"] == 23
     X.loc[last_hour, "price_last_1d"] = X.loc[last_hour, "price_lag_1d"]
     return X
 
 
-def true_price(X: pd.DataFrame, renewables: str = "res_fcst_lag_1d") -> pd.Series:
+def true_price(X: pd.DataFrame, renewables: str = "renewables_fcst_lag_1d") -> pd.Series:
     """Prices built from known slopes; renewables matter most at midday, load in the evening."""
     hour = X["local_hour"]
     load_slope = np.where(hour.between(17, 20), 6.0, 3.0)
@@ -61,7 +61,8 @@ def test_recovers_hour_specific_slopes():
     X = inputs()
     coefficients = LinearByHour().fit(X, true_price(X)).coefficients().drop(index=23)
     assert np.isclose(coefficients.loc[19, "load_gw"], 6.0) and np.isclose(coefficients.loc[4, "load_gw"], 3.0)
-    assert np.isclose(coefficients.loc[12, "res_gw"], -8.0) and np.isclose(coefficients.loc[2, "res_gw"], -2.0)
+    assert np.isclose(coefficients.loc[12, "renewables_gw"], -8.0)
+    assert np.isclose(coefficients.loc[2, "renewables_gw"], -2.0)
     assert np.allclose(coefficients["price_lag_1d"], 0.5) and np.allclose(coefficients["price_last_1d"], 0.1)
     assert np.allclose(coefficients["price_min_1d"], 0.05) and np.allclose(coefficients["price_max_1d"], 0.03)
     assert np.allclose(coefficients["saturday"], -10.0) and np.allclose(coefficients["sunday"], -15.0)
@@ -105,12 +106,12 @@ def test_the_choice_of_baseline_weekday_does_not_change_forecasts():
 def test_main_version_uses_the_previous_day_renewables_and_the_papers_setup_day_d():
     X = inputs()
     main = LinearByHour().fit(X, true_price(X))
-    assert np.allclose(main.design(X)["res_gw"], X["res_fcst_lag_1d"] / 1000)
-    assert "res_fcst" not in LinearByHour.features and "res_fcst_lag_1d" in LinearByHour.features
-    papers = LinearPapers().fit(X, true_price(X, renewables="res_fcst"))
-    assert np.allclose(papers.design(X)["res_gw"], X["res_fcst"] / 1000)
-    assert np.isclose(papers.coefficients().loc[12, "res_gw"], -8.0)
-    assert "res_fcst" in LinearPapers.features and "res_fcst_lag_1d" not in LinearPapers.features
+    assert np.allclose(main.design(X)["renewables_gw"], X["renewables_fcst_lag_1d"] / 1000)
+    assert "renewables_fcst" not in LinearByHour.features and "renewables_fcst_lag_1d" in LinearByHour.features
+    papers = LinearPapers().fit(X, true_price(X, renewables="renewables_fcst"))
+    assert np.allclose(papers.design(X)["renewables_gw"], X["renewables_fcst"] / 1000)
+    assert np.isclose(papers.coefficients().loc[12, "renewables_gw"], -8.0)
+    assert "renewables_fcst" in LinearPapers.features and "renewables_fcst_lag_1d" not in LinearPapers.features
 
 
 def test_asinh_version_centres_on_the_median_and_scales_by_the_mad():

@@ -1,4 +1,5 @@
-"""Build the hourly table: one row per UTC hour with the price and the load, wind and solar forecasts.
+"""Build the hourly table: one row per UTC hour with the price and the load, wind and solar forecasts, and
+the prices of Germany-Luxembourg and Czechia for notebook 02.
 
 Run from the project root after downloading:
 
@@ -23,9 +24,11 @@ SERIES_COLUMNS = {  # downloaded series name -> column name in the hourly table
     "solar_da_fcst": "solar_fcst",
     "wind_onshore_da_fcst": "wind_onshore_fcst",
     "wind_offshore_da_fcst": "wind_offshore_fcst",
+    "price_da_de_lu": "price_de_lu",
+    "price_da_cz": "price_cz",
 }
 HOURLY_COLUMNS = ["ts_utc", "price", "load_fcst", "solar_fcst", "wind_onshore_fcst", "wind_offshore_fcst", "wind_fcst",
-                  "residual_load_fcst"]
+                  "residual_load_fcst", "price_de_lu", "price_cz"]
 
 
 def build_hourly(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
