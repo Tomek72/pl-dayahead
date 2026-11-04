@@ -20,14 +20,14 @@ def inputs(n_days: int, seed: int) -> pd.DataFrame:
         "is_holiday": False,
         **{column: rng.normal(100, 30, count) for column in PRICE_INPUTS},
         "load_fcst": rng.uniform(13000, 25000, count),
-        "res_fcst": rng.uniform(0, 15000, count),
-        "res_fcst_lag_1d": rng.uniform(0, 15000, count),
+        "renewables_fcst": rng.uniform(0, 15000, count),
+        "renewables_fcst_lag_1d": rng.uniform(0, 15000, count),
     })
 
 
 def merit_order_price(X: pd.DataFrame) -> pd.Series:
     """A kinked supply curve in load net of renewables: cheap and flat below 12 GW, steep above it."""
-    residual_gw = (X["load_fcst"] - X["res_fcst_lag_1d"]) / 1000  # the main models' renewables input
+    residual_gw = (X["load_fcst"] - X["renewables_fcst_lag_1d"]) / 1000  # the main models' renewables input
     return pd.Series(np.where(residual_gw > 12, 60 + 25 * (residual_gw - 12), 30 + 2.5 * residual_gw), index=X.index)
 
 
@@ -38,8 +38,9 @@ def mae(prediction, actual) -> float:
 def test_same_inputs_as_the_linear_model_plus_the_hour():
     assert set(GradientBoosting.features) == set(LinearByHour.features)  # local_hour is already listed there
     assert "local_hour" in GradientBoosting.features
-    assert "res_fcst_lag_1d" in GradientBoosting.features and "res_fcst" not in GradientBoosting.features
-    assert "res_fcst" in GradientBoostingPapers.features and "res_fcst_lag_1d" not in GradientBoostingPapers.features
+    assert "renewables_fcst_lag_1d" in GradientBoosting.features and "renewables_fcst" not in GradientBoosting.features
+    assert "renewables_fcst" in GradientBoostingPapers.features
+    assert "renewables_fcst_lag_1d" not in GradientBoostingPapers.features
 
 
 def test_learns_a_kinked_merit_order_better_than_the_linear_model():

@@ -25,7 +25,7 @@ import pandas as pd
 
 from pl_dayahead import store
 from pl_dayahead.features import TARGET, build_features
-from pl_dayahead.models import MODELS
+from pl_dayahead.models import MODELS, PAPERS_SETUP
 
 FIRST_TEST_DAY = date(2024, 1, 1)
 TRAIN_DAYS = 365
@@ -78,24 +78,14 @@ def walk_forward(features: pd.DataFrame, model_factory, first_test_day: date = F
 
 
 def save(con, predictions: pd.DataFrame) -> None:
-    """Write a model's forecasts to the predictions table, replacing its earlier forecasts."""
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
-            model VARCHAR, ts_utc TIMESTAMPTZ, delivery_day DATE, issue_time_utc TIMESTAMPTZ,
-            trained_from DATE, trained_to DATE, prediction DOUBLE, actual DOUBLE, run_at TIMESTAMPTZ
-        )
-    """)
-    con.execute("DELETE FROM predictions WHERE model = ?", [predictions["model"].iloc[0]])
-    con.register("new_predictions", predictions.assign(run_at=pd.Timestamp.now(tz="UTC")))
-    try:
-        con.execute("""
-            INSERT INTO predictions
-            SELECT model, ts_utc, CAST(delivery_day AS DATE), issue_time_utc,
-                   CAST(trained_from AS DATE), CAST(trained_to AS DATE), prediction, actual, run_at
-            FROM new_predictions
-        """)
-    finally:
-        con.unregister("new_predictions")
+    """Write a model's forecasts to the predictions table in one transaction, replacing its earlier forecasts."""
+    store.replace_predictions(con, predictions.assign(run_at=pd.Timestamp.now(tz="UTC")))
+
+
+def models_using_late_inputs(names: list[str], late_inputs: list[str]) -> list[str]:
+    """Return the models among `names` that use an input published after 11:00 without being the papers' setup."""
+    papers_setup = set(PAPERS_SETUP.values())
+    return [name for name in names if name not in papers_setup and set(MODELS[name].features) & set(late_inputs)]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -115,6 +105,11 @@ def main(argv: list[str] | None = None) -> None:
     if convention:
         print(f"  inputs relying on the papers' convention (see availability.py): {', '.join(convention)}")
     names = args.models or list(MODELS)
+    late = models_using_late_inputs(names, convention)
+    if late:
+        con.close()
+        sys.exit(f"{', '.join(late)}: an input published after 11:00 is allowed only in the papers' setup "
+                 "(see availability.py)")
     # A carbon variant must forecast the same hours as its base model, or every model's scores move
     # to fewer common hours, so a gap in the auctions stops the run instead.
     if any("eua_lag_2d" in MODELS[name].features for name in names) and features["eua_lag_2d"].isna().any():

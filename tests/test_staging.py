@@ -15,11 +15,11 @@ def raw_rows(series: str, timestamps: pd.DatetimeIndex, values, resolution: int)
 
 
 def full_day(day: date, freq: str = "h", **values) -> pd.DataFrame:
-    """All five series for one delivery day, each at a constant value."""
+    """All seven series for one delivery day, each at a constant value."""
     timestamps = delivery_index(day, freq)
     resolution = 60 if freq == "h" else 15
     defaults = dict(price_da=100.0, load_da_fcst=20000.0, solar_da_fcst=3000.0,
-                    wind_onshore_da_fcst=5000.0, wind_offshore_da_fcst=0.0)
+                    wind_onshore_da_fcst=5000.0, wind_offshore_da_fcst=0.0, price_da_de_lu=90.0, price_da_cz=95.0)
     defaults.update(values)
     return pd.concat(raw_rows(series, timestamps, value, resolution) for series, value in defaults.items())
 
@@ -39,6 +39,14 @@ def test_quarter_hours_averaged_to_the_hour():
     hourly, _ = build_hourly(raw)
     assert len(hourly) == 24
     assert np.allclose(hourly["price"], 100.0)
+
+
+def test_neighbour_prices_are_averaged_to_the_hour_like_polands():
+    day = date(2026, 1, 15)
+    quarter_prices = raw_rows("price_da_cz", delivery_index(day, "15min"), np.tile([80.0, 90.0, 110.0, 120.0], 24), 15)
+    hourly, _ = build_hourly(pd.concat([full_day(day, "15min").query("series != 'price_da_cz'"), quarter_prices]))
+    assert np.allclose(hourly["price_cz"], 100.0)
+    assert np.allclose(hourly["price_de_lu"], 90.0)
 
 
 def test_partly_covered_hour_becomes_missing():

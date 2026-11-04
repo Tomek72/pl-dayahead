@@ -7,9 +7,9 @@ Regulation 543/2013. Every deadline falls on the day before delivery, no later t
 That gives one rule: an input is in time if it comes from a day before the target day, or from the
 target day itself with a deadline no later than 11:00. Prices for day d are due at 13:00 on d-1, so
 they never qualify. The renewables forecast for day d is due at 18:00 on d-1, so the main models use
-the forecast for d-1 instead. Only the papers' setup uses day d's forecast, as the papers do, and
-check() reports which inputs rely on that. The truncation tests in tests/test_features.py check the
-rule against the data.
+the forecast for d-1 instead. Only the papers' setup uses day d's forecast, as the papers do:
+check() reports which inputs rely on that, and the backtest stops if any other model uses one. The
+truncation tests in tests/test_features.py check the rule against the data.
 
 The EU emission allowance (EUA) auctions are the one series published on its own day rather than
 the day before: an auction's result is set just after its bidding window closes at 11:00, and the
@@ -49,7 +49,7 @@ RULES = {
         time(10, 0),
         "Reg. 543/2013 Art. 6(2)(b): day-ahead load forecast no later than two hours before gate closure.",
     ),
-    "res_fcst": Rule(
+    "renewables_fcst": Rule(
         time(18, 0),
         "Wind plus solar. Reg. 543/2013 Art. 14(2)(d): day-ahead wind and solar forecast no later than "
         "18:00 the day before delivery.",
@@ -64,7 +64,7 @@ RULES = {
 
 # Target-day forecasts the papers use as inputs even when they are published after the forecast is
 # made (Lago et al. 2021). Prices are never on this list.
-PAPERS_CONVENTION = {"load_fcst", "res_fcst"}
+PAPERS_CONVENTION = {"load_fcst", "renewables_fcst"}
 
 AGGREGATIONS = {"hour", "last", "min", "max", "latest"}
 

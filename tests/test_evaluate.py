@@ -1,3 +1,5 @@
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
 
@@ -75,6 +77,17 @@ def test_a_clearly_better_model_is_significant():
     daily = daily_mae(year_of_forecasts(0.2), ["naive", "good"])
     stat, p = diebold_mariano(daily, "good", "naive")
     assert stat > 0 and p < 0.001
+
+
+def test_the_statistic_matches_a_hand_computed_example():
+    # Daily differences 2, 0, 4, 2: mean 2, deviations 0, -2, 2, 0, and autocovariances, divided by the 4 days,
+    # of 2 at lag 0 and -1 at lag 1. Newey-West with one lag: 2 + 2 x (1 - 1/2) x (-1) = 1, so DM = 2 / sqrt(1/4) = 4.
+    # With no lags the variance is 2 and DM = 2 / sqrt(2/4) = 2 sqrt(2).
+    daily = pd.DataFrame({"better": [10.0, 10.0, 10.0, 10.0], "worse": [12.0, 10.0, 14.0, 12.0]})
+    statistic, p_value = diebold_mariano(daily, "better", "worse", lags=1)
+    assert np.isclose(statistic, 4.0)
+    assert np.isclose(p_value, 1 - NormalDist().cdf(4.0))
+    assert np.isclose(diebold_mariano(daily, "better", "worse", lags=0)[0], 2 * np.sqrt(2))
 
 
 def test_the_two_directions_add_up_to_one():

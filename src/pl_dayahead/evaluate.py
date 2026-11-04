@@ -67,7 +67,7 @@ from matplotlib.figure import Figure
 
 from pl_dayahead import store
 from pl_dayahead.config import FIG_DIR, PROJECT_ROOT, SDAC_15MIN_START
-from pl_dayahead.models import MODELS, VARIANTS
+from pl_dayahead.models import MODELS, PAPERS_SETUP, VARIANTS
 from pl_dayahead.style import BASELINE, GRID, INK, INK_2, MODEL_COLOURS, MUTED, SOURCE_BACKTEST, SURFACE, save
 from pl_dayahead.timeutils import LOCAL_TZ, day_label
 
@@ -77,7 +77,6 @@ RESULTS = PROJECT_ROOT / "reports" / "results.md"
 CHART = "mae_by_model.png"
 PERIODS = ["hourly MTU (to Sep 2025)", "15-minute MTU (from Oct 2025)"]
 DM_LAGS = 7  # days of autocorrelation allowed for in the Diebold-Mariano standard error
-PAPERS_SETUP = {"gbm": "gbm_papers", "linear": "linear_papers"}  # main model -> its variant with day d's renewables
 MODEL_LABELS = {"gbm": "Gradient-boosted trees", "linear": "Linear expert model",
                 "naive_similar_day": "Similar-day naive", "naive_weekly": "Weekly naive"}
 

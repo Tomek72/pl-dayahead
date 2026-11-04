@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from pl_dayahead.features import COLUMNS, build_features
-from pl_dayahead.models import MODELS
+from pl_dayahead.models import MODELS, PAPERS_SETUP
 from pl_dayahead.timeutils import LOCAL_TZ, delivery_index
 
 
@@ -59,7 +59,7 @@ def test_columns_and_one_row_per_hour():
     features, convention = build_features(hourly)
     assert list(features.columns) == COLUMNS
     assert len(features) == len(hourly)
-    assert convention == ["res_fcst"]  # only the day-d renewables forecast is published after 11:00
+    assert convention == ["renewables_fcst"]  # only the day-d renewables forecast is published after 11:00
 
 
 def test_price_lags_use_the_same_local_hour():
@@ -89,6 +89,14 @@ def test_spring_clock_change_lag_is_interpolated():
     lag = feature_rows(build_features(hourly)[0], date(2026, 3, 30), 2)["price_lag_1d"].item()
     expected = (price_at(hourly, date(2026, 3, 29), 1).item() + price_at(hourly, date(2026, 3, 29), 3).item()) / 2
     assert lag == expected
+
+
+def test_a_partial_first_day_is_not_taken_for_the_spring_clock_change():
+    hourly = hourly_table(date(2026, 1, 1), 10).iloc[1:].copy()  # starts at 01:00, so 1 January has 23 rows
+    local = hourly["ts_utc"].dt.tz_convert(LOCAL_TZ)
+    hourly.loc[(local.dt.date == date(2026, 1, 1)) & (local.dt.hour == 2), "price"] = 5000.0  # unlike 01:00 and 03:00
+    lag = feature_rows(build_features(hourly)[0], date(2026, 1, 2), 2)["price_lag_1d"].item()
+    assert lag == 5000.0  # the real 02:00, not the mean of 01:00 and 03:00
 
 
 def test_autumn_clock_change_both_ways():
@@ -140,8 +148,8 @@ def test_renewables_are_wind_plus_solar_for_day_d_and_for_the_day_before():
         return (hourly.loc[selected, "wind_fcst"] + hourly.loc[selected, "solar_fcst"]).item()
 
     target = feature_rows(build_features(hourly)[0], date(2026, 1, 9), 13)
-    assert target["res_fcst"].item() == renewables(date(2026, 1, 9), 13)
-    assert target["res_fcst_lag_1d"].item() == renewables(date(2026, 1, 8), 13)
+    assert target["renewables_fcst"].item() == renewables(date(2026, 1, 9), 13)
+    assert target["renewables_fcst_lag_1d"].item() == renewables(date(2026, 1, 8), 13)
 
 
 def truncate(hourly: pd.DataFrame, target: date, renewables_of_target_day: bool) -> pd.DataFrame:
@@ -178,14 +186,15 @@ def test_every_input_outside_the_papers_setup_was_public_at_the_issue_time():
     target = date(2026, 1, 12)
     full, _ = build_features(hourly)
     truncated, _ = build_features(truncate(hourly, target, renewables_of_target_day=True))
-    inputs = sorted({column for name, model in MODELS.items() if not name.endswith("_papers") for column in model.features})
-    assert "res_fcst" not in inputs
+    inputs = sorted({column for name, model in MODELS.items() if name not in PAPERS_SETUP.values()
+                     for column in model.features})
+    assert "renewables_fcst" not in inputs
     pd.testing.assert_frame_equal(
         feature_rows(full, target)[inputs].reset_index(drop=True),
         feature_rows(truncated, target)[inputs].reset_index(drop=True),
     )
-    assert feature_rows(truncated, target)["res_fcst"].isna().all()
-    assert feature_rows(full, target)["res_fcst"].notna().all()
+    assert feature_rows(truncated, target)["renewables_fcst"].isna().all()
+    assert feature_rows(full, target)["renewables_fcst"].notna().all()
 
 
 def test_carbon_price_is_the_latest_auction_on_or_before_two_days_earlier():
