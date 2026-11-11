@@ -2,7 +2,7 @@
 
 This project forecasts the 24 hourly prices of the Polish day-ahead auction at 11:00 Warsaw time on the day before delivery, one hour before bids close, using only information published by then. A linear expert model and gradient-boosted trees are tested against two naive benchmarks, which copy earlier prices, in a walk-forward backtest over 1,028 delivery days, from 1 January 2024 to 24 October 2026.
 
-Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark, to 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34; the difference between the two models is not significant. The trees' daily bias, their mean forecast error over the day, follows the change from the wind and solar forecast they saw at 11:00, the one for the day before delivery, to the delivery day's own, published at 18:00 (Spearman rank correlation 0.59 over all days). Given that day's forecast, the same models' error would fall by 14 to 20%, which suggests that a better wind and solar forecast at 11:00 would help a desk more than a more complex model.
+Both models cut the mean absolute error (MAE) by 22% against the similar-day naive benchmark: 21.18 EUR/MWh for the trees and 21.30 for the linear model, against 27.34. The difference between the two is not significant. At 11:00 the models see only the wind and solar forecast for the day before delivery. Given the delivery day's own forecast, due at 18:00, their error would fall by a further 14 to 20%. Their daily bias, the mean forecast error over a day, follows the gap between the two forecasts (Spearman rank correlation 0.59 for the trees, 0.56 for the linear model). This suggests that a better wind and solar forecast at 11:00 would help a desk more than a more complex model.
 
 ![Mean absolute error by model](reports/figures/mae_by_model.png)
 
@@ -89,6 +89,8 @@ The error analysis is in [notebook 02](notebooks/02_error_analysis.ipynb).
 
 Two assumptions about the data can be wrong in both directions: that each series is published exactly at its deadline, and that the stored values are the ones public at the time. The stored load forecast may be a later update than the version public at 11:00, which would flatter the models. Day d's renewables forecast may have been public before 11:00, which would put the papers' setup within reach. The archive cannot settle either question.
 
+Every statement here about which wind and solar forecast is public at 11:00 refers to the ENTSO-E series, the data the models are built on. PSE, the Polish transmission system operator, also publishes a forecast for day d in its own reports, and before 11:00: on 11 November 2026 its report [`pk5l-wp`](https://api.raporty.pse.pl/api/pk5l-wp) held hourly forecasts for the 12th and later days by 02:30 Warsaw time. The report keeps only the latest version of each hour, so that forecast cannot be backtested, and the main models stay on what the ENTSO-E deadlines guarantee. I would expect a model given PSE's forecast to land between the main models and the papers' setup; archiving the report every day at 11:00 would allow that test.
+
 The main models see only Polish electricity data, with no fuel, carbon, flow or outage data, so they react to a cost shock only once it shows up in prices; of these inputs, only carbon is tested. Trees cannot forecast outside the price range of their training window; the linear model can, but in this backtest it also under-forecast spikes heavily: in hours at 250 EUR/MWh and above its bias was −92.9 EUR/MWh, against −104.6 for the trees. The target is hourly, while the auction has traded 15-minute products since October 2025, and the results cover one market and one period, 2024 to 2026.
 
 The forecast is a point forecast, one number per hour with no range of likely prices. It is scored on accuracy alone, and what it would be worth to a desk in money, for example as bids in the auction, is not measured.
@@ -128,7 +130,7 @@ Then, from the project root:
 
 ```
 uv sync
-uv run python -m pl_dayahead.ingest.entsoe
+uv run python -m pl_dayahead.ingest.entsoe --end 2026-10-25
 uv run python -m pl_dayahead.ingest.eex
 uv run python -m pl_dayahead.staging
 uv run python -m pl_dayahead.backtest
@@ -136,7 +138,13 @@ uv run python -m pl_dayahead.evaluate
 uv run pytest
 ```
 
+`--end 2026-10-25` stops the download after 24 October 2026, the last delivery day of the published backtest; without it the download runs to the current month and the backtest covers more days. ENTSO-E can revise values after publishing them, so a fresh download may not match the October 2026 one exactly.
+
 The EEX reports need no token. The data is stored in `data/pl_power.duckdb` and the downloaded reports in `data/eex`, neither of which is part of the repository. The backtest runs every model and variant in about 35 minutes; the four tree models take most of that time, because each fits 1,028 models. Open the notebooks with `uv run jupyter lab`.
+
+## Use of AI tools
+
+The code and drafts of the text were written with an AI coding assistant, which I also consulted on the method. The design decisions are mine, each one tied to the reference papers, and the tests check the rules they set. Every result in this README was checked by script against `reports/results.md` or a notebook output.
 
 ## License
 
