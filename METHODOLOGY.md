@@ -26,7 +26,7 @@ The forecast rests on three assumptions about the data:
 
 The README's [table of publication times](README.md#the-forecasting-problem) shows what follows for each input at 11:00 on d−1.
 
-The papers give their models the wind and solar forecast for day d and treat it as known on d−1 (Lago et al. 2021). Its deadline is after gate closure, and ENTSO-E does not show whether it was published earlier, so I use the forecast for d−1 in the main models. The same models given day d's forecast, called the papers' setup, are run as variants to measure what that forecast would be worth if it were public by 11:00.
+The papers give their models the wind and solar forecast for day d and treat it as known on d−1 (Lago et al. 2021). Its deadline is after gate closure, and ENTSO-E does not show whether it was published earlier, so I use the forecast for d−1 in the main models, which keeps them free of look-ahead bias under assumption 1. The same models given day d's forecast, called the papers' setup, are ex-post forecasts under that assumption, and are run as variants to measure what that forecast would be worth if it were public by 11:00.
 
 An EUA auction's bidding window closes at 11:00, and EEX's reports for 2022 to 2026 time every general-allowance result between 11:00 and 11:04 on the auction day, so an auction held on d−1 is never public at 11:00. The carbon input is therefore the latest auction held on or before d−2. Auctions pause for up to four weeks over New Year, and the last price carries on until they resume.
 
