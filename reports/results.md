@@ -91,26 +91,50 @@ MAE in EUR/MWh on 24,671 hours forecast by every model.
 | 22 | 20.12 | 14.37 | 13.82 | 16.80 | 0.71 | 0.69 | 0.84 | 1028 |
 | 23 | 18.66 | 12.97 | 12.76 | 15.52 | 0.69 | 0.68 | 0.83 | 1028 |
 
-## Diebold-Mariano test
+## Main-model Diebold-Mariano comparisons
 
-One-sided p-values on daily MAE over 1,028 days, Newey-West standard error with 7 lags. Below 0.05: the row model is more accurate than the column model.
+Two-sided tests of equal predictive accuracy on daily MAE over 1,028 days. Difference is Model B minus Model A in EUR/MWh; positive values favour Model A. The raw p-values use a Newey-West HAC standard error with 7 Bartlett lags; Holm adjustment covers the six unique pairs. Significance threshold: 5%. P-values are shown at full precision.
 
-| row better than column? | gbm | linear | naive_similar_day | naive_weekly |
+| Model A | Model B | Mean daily MAE difference (B − A) | Raw two-sided p-value | Holm-adjusted p-value | Significant after adjustment |
+|---|---|---|---|---|---|
+| gbm | linear | 0.12 | 0.5468410563489451 | 0.5468410563489451 | No |
+| gbm | naive_similar_day | 6.16 | 1.9675796743076675e-30 | 7.87031869723067e-30 | Yes |
+| gbm | naive_weekly | 11.38 | 6.020802448035644e-57 | 3.6124814688213862e-56 | Yes |
+| linear | naive_similar_day | 6.03 | 8.507626316236101e-27 | 2.5522878948708302e-26 | Yes |
+| linear | naive_weekly | 11.26 | 7.992881793787455e-53 | 3.9964408968937274e-52 | Yes |
+| naive_similar_day | naive_weekly | 5.22 | 1.3297810441302367e-19 | 2.6595620882604735e-19 | Yes |
+
+## Exploratory variant comparisons
+
+Each variant changes one input or setting in its corresponding main model. The mean daily MAE difference is variant minus main model; negative values favour the variant. Two-sided DM p-values use the seven-lag HAC standard error. Holm adjustment is a separate family across 6 of 6 registered comparisons available in this report; significance threshold: 5%. These are secondary sensitivities. Multiplicity adjustment does not remove the limitations of selecting or evaluating variants on the same test period.
+
+| variant | Corresponding main model | Mean daily MAE difference (variant − main) | Raw two-sided p-value | Holm-adjusted p-value | Significant after adjustment |
+|---|---|---|---|---|---|
+| linear_papers | linear | -3.01 | 1.5662511385767302e-25 | 7.83125569288365e-25 | Yes |
+| gbm_papers | gbm | -4.23 | 2.284332532035016e-52 | 1.3705995192210096e-51 | Yes |
+| linear_asinh | linear | -0.63 | 6.599644022697632e-06 | 2.6398576090790527e-05 | Yes |
+| gbm_defaults | gbm | 0.11 | 0.12507295900257467 | 0.37521887700772405 | No |
+| linear_eua | linear | -0.02 | 0.8102586271408022 | 1.0 | No |
+| gbm_eua | gbm | -0.06 | 0.5288242184106915 | 1.0 | No |
+
+## HAC bandwidth robustness diagnostic
+
+Sample autocorrelations of the six main-model daily loss-difference series at lags 8–28 range from 0.057 to 0.119 for the pair-specific largest absolute coefficient shown below (signed values). The table reports two-sided raw p-values with Bartlett Newey-West bandwidths of 7, 14 and 28 days. This is a robustness diagnostic, not an additional testing family; the seven-lag specification remains primary. The table permits comparison of the raw p-values across bandwidths.
+
+| Model A | Model B | Largest absolute ACF, lags 8–28 | Lag |
+|---|---|---|---|
+| gbm | linear | -0.065 | 25 |
+| gbm | naive_similar_day | 0.079 | 21 |
+| gbm | naive_weekly | 0.085 | 26 |
+| linear | naive_similar_day | -0.057 | 24 |
+| linear | naive_weekly | 0.075 | 26 |
+| naive_similar_day | naive_weekly | 0.119 | 14 |
+
+| Model A | Model B | Raw p, 7 lags | Raw p, 14 lags | Raw p, 28 lags |
 |---|---|---|---|---|
-| gbm |  | 0.273 | <0.001 | <0.001 |
-| linear | 0.727 |  | <0.001 | <0.001 |
-| naive_similar_day | 1.000 | 1.000 |  | <0.001 |
-| naive_weekly | 1.000 | 1.000 | 1.000 |  |
-
-## Variants against their base models
-
-Each variant changes one thing about a main model (see models/linear.py and models/boosting.py). Difference = variant MAE minus base MAE in EUR/MWh; p = two-sided Diebold-Mariano test on daily MAE.
-
-| variant | base | MAE base | MAE variant | difference | difference % | p |
-|---|---|---|---|---|---|---|
-| linear_papers | linear | 21.30 | 18.30 | -3.01 | -14.11 | <0.001 |
-| gbm_papers | gbm | 21.18 | 16.95 | -4.23 | -19.98 | <0.001 |
-| linear_asinh | linear | 21.30 | 20.67 | -0.63 | -2.97 | <0.001 |
-| gbm_defaults | gbm | 21.18 | 21.30 | 0.11 | 0.54 | 0.125 |
-| linear_eua | linear | 21.30 | 21.28 | -0.02 | -0.10 | 0.810 |
-| gbm_eua | gbm | 21.18 | 21.12 | -0.06 | -0.30 | 0.529 |
+| gbm | linear | 0.5468410563489451 | 0.54041536553632 | 0.5401224271664118 |
+| gbm | naive_similar_day | 1.9675796743076675e-30 | 8.27522917950206e-26 | 3.512400209483208e-21 |
+| gbm | naive_weekly | 6.020802448035644e-57 | 3.257776113356557e-48 | 6.001096661229331e-41 |
+| linear | naive_similar_day | 8.507626316236101e-27 | 8.290360650865768e-23 | 1.0861879987088231e-19 |
+| linear | naive_weekly | 7.992881793787455e-53 | 9.043179748880472e-46 | 1.4910930365104597e-40 |
+| naive_similar_day | naive_weekly | 1.3297810441302367e-19 | 5.8993145240680836e-18 | 6.647333391474091e-17 |

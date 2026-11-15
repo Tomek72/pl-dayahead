@@ -17,3 +17,5 @@ data/
 # Notebooks and macOS
 .ipynb_checkpoints/
 .DS_Store
+AGENTS.md
+pl-dayahead_AGENTS.md

@@ -152,6 +152,30 @@ def test_renewables_are_wind_plus_solar_for_day_d_and_for_the_day_before():
     assert target["renewables_fcst_lag_1d"].item() == renewables(date(2026, 1, 8), 13)
 
 
+def test_renewables_lag_uses_warsaw_hours_across_clock_changes():
+    spring = hourly_table(date(2026, 3, 27), 5)  # 29 March has no 02:00
+    spring_features, _ = build_features(spring)
+    spring_local = spring["ts_utc"].dt.tz_convert(LOCAL_TZ)
+    before_spring = spring.loc[(spring_local.dt.date == date(2026, 3, 28)) & (spring_local.dt.hour == 1)]
+    expected_before_spring = (before_spring["wind_fcst"] + before_spring["solar_fcst"]).item()
+    assert feature_rows(spring_features, date(2026, 3, 29), 2).empty
+    assert feature_rows(spring_features, date(2026, 3, 29), 1)["renewables_fcst_lag_1d"].item() == expected_before_spring
+    previous_spring = spring.loc[(spring_local.dt.date == date(2026, 3, 29)) & spring_local.dt.hour.isin([1, 3])]
+    expected_spring = (previous_spring["wind_fcst"] + previous_spring["solar_fcst"]).mean()
+    assert feature_rows(spring_features, date(2026, 3, 30), 2)["renewables_fcst_lag_1d"].item() == expected_spring
+
+    autumn = hourly_table(date(2025, 10, 24), 5)  # 26 October has two 02:00 hours
+    autumn_features, _ = build_features(autumn)
+    autumn_local = autumn["ts_utc"].dt.tz_convert(LOCAL_TZ)
+    before_autumn = autumn.loc[(autumn_local.dt.date == date(2025, 10, 25)) & (autumn_local.dt.hour == 2)]
+    expected_before_autumn = (before_autumn["wind_fcst"] + before_autumn["solar_fcst"]).item()
+    target_autumn = feature_rows(autumn_features, date(2025, 10, 26), 2)
+    assert len(target_autumn) == 2 and (target_autumn["renewables_fcst_lag_1d"] == expected_before_autumn).all()
+    previous_autumn = autumn.loc[(autumn_local.dt.date == date(2025, 10, 26)) & (autumn_local.dt.hour == 2)]
+    expected_autumn = (previous_autumn["wind_fcst"] + previous_autumn["solar_fcst"]).mean()
+    assert feature_rows(autumn_features, date(2025, 10, 27), 2)["renewables_fcst_lag_1d"].item() == expected_autumn
+
+
 def truncate(hourly: pd.DataFrame, target: date, renewables_of_target_day: bool) -> pd.DataFrame:
     """Delete what was not public at 11:00 on the day before `target`."""
     local_day = hourly["ts_utc"].dt.tz_convert(LOCAL_TZ).dt.date

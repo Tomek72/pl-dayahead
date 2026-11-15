@@ -10,6 +10,10 @@ The forecast is issued at 11:00 Warsaw time on d−1, one hour before the auctio
 
 The electricity data comes from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for the Polish bidding zone: day-ahead prices (12.1.D), the day-ahead total load forecast (6.1.B) and the day-ahead wind and solar generation forecast (14.1.D), with wind onshore plus offshore. It starts on 1 January 2023, which keeps the 2022 gas crisis out of training and leaves one full year before the first test day. The day-ahead prices of Germany-Luxembourg and Czechia, from the same source, serve only the check of market coupling in notebook 02.
 
+More precisely, `ingest/entsoe.py` calls the ENTSO-E REST API for `documentType=A65`, `processType=A01` and `outBiddingZone_Domain=10YPL-AREA-----S` for `load_da_fcst`; the [API guide](https://transparency.entsoe.eu/content/static_content/download?path=%2FStatic+content%2Fweb+api%2FRestfulAPI_IG.pdf) maps that request to Article 6(1)(b), day-ahead total load. It calls `documentType=A69`, `processType=A01` and `in_Domain=10YPL-AREA-----S` for the wind-and-solar forecast under Article 14(1)(d), without a production-type filter. The response's Solar (B16), Wind Onshore (B19) and Wind Offshore (B18) series are stored separately; staging adds the two wind series and leaves solar separate. No actual load or actual solar-generation series is ingested or used in notebook 01.
+
+The legal definition of [total load in Article 2(27)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:02013R0543-20200101) is a balance quantity—generation plus imports, less exports and power used for storage, including losses—not a definition of gross end-user consumption. Article 14(1)(d) requires a wind-and-solar generation forecast per bidding zone, but neither the Regulation nor the API guide specifies whether PSE's A69 forecast estimates low-voltage/prosumer PV, its self-consumption, or a particular metering population. PSE's [separate five-year planning report](https://www.pse.pl/dane-systemowe/plany-pracy-kse/plan-koordynacyjny-5-letni/wielkosci-podstawowe/opis) currently forecasts total PV generation and deducts a PV autogeneration estimate based on low-voltage prosumer capacity from its planned network demand. That documents PSE's planning convention, not the construction of the ENTSO-E A65/A69 series used here. No source found maps those products to one another or establishes their treatment over 2023–2026.
+
 Values are stored hourly. Quarter-hour values are averaged into hours, and an hour counts only if its values are all the same length and together cover 60 minutes; otherwise it is missing.
 
 The carbon price comes from EEX, which runs the primary auctions of emission allowances (EUA) in the EU Emissions Trading System and publishes every result free of charge. It is the clearing price of each auction of general allowances, in EUR per tonne of CO2: 1,039 auctions from 10 January 2022 to 28 October 2026.
@@ -26,7 +30,7 @@ The forecast rests on three assumptions about the data:
 
 The README's [table of publication times](README.md#the-forecasting-problem) shows what follows for each input at 11:00 on d−1.
 
-The papers give their models the wind and solar forecast for day d and treat it as known on d−1 (Lago et al. 2021). Its deadline is after gate closure, and ENTSO-E does not show whether it was published earlier, so I use the forecast for d−1 in the main models, which keeps them free of look-ahead bias under assumption 1. The same models given day d's forecast, called the papers' setup, are ex-post forecasts under that assumption, and are run as variants to measure what that forecast would be worth if it were public by 11:00.
+The papers give their models the wind and solar forecast for day d and treat it as known on d−1 (Lago et al. 2021). Under the legal publication-deadline assumption above, that forecast is due at 18:00 on d−1, after the 11:00 issue time. ENTSO-E does not provide the actual historical publication timestamps, so this is an assumption about availability, not a claim about when each forecast was observed to appear. The main models therefore use the forecast for d−1, assumed available by 11:00. The `linear_papers` and `gbm_papers` variants substitute the target delivery day's forecast for the preceding delivery day's forecast, following the papers. The experiment measures sensitivity to input substitution across different delivery days. It does not measure the value of a revised forecast for the same delivery day available at 11:00, and cannot establish the commercial value of such an update.
 
 An EUA auction's bidding window closes at 11:00, and EEX's reports for 2022 to 2026 time every general-allowance result between 11:00 and 11:04 on the auction day, so an auction held on d−1 is never public at 11:00. The carbon input is therefore the latest auction held on or before d−2. Auctions pause for up to four weeks over New Year, and the last price carries on until they resume.
 
@@ -54,11 +58,11 @@ Hours follow the Warsaw clock. When the clocks go forward, the missing 02:00 of 
 
 Every input is checked against its publication deadline when the input table is built (`availability.py`): the build stops if one is late, apart from day d's renewables forecast, which the backtest allows only in the papers' setup. Three truncation tests check the data as well as the rule. Deleting every price from day d onwards must leave every input for day d unchanged; deleting day d's renewables forecast too must leave every input outside the papers' setup unchanged; and deleting every auction from d−1 onwards must leave the carbon input unchanged.
 
-Load and renewables are the outside inputs because the price follows residual load, load minus wind and solar: the more demand is left for conventional plants, the further up the merit order the auction clears (figure below). In notebook 01, Spearman's rank correlation between price and residual load was 0.69 to 0.86 in the years 2023 to 2026, against 0.18 to 0.54 for load alone.
+Load and renewables are outside inputs. Their difference, load minus wind and solar, is an arithmetic residual-load proxy that gives economic intuition for why a higher quantity to be met by other sources can be associated with a higher auction price. It is not a verified measure of demand left for dispatchable plants: the ENTSO-E A65 and A69 documentation does not establish their common treatment of behind-the-meter PV. Notebook 01 compares the price relationship on a common sample in each year. The retrospective target-day proxy, which uses day d's renewables forecast, has a Spearman correlation with price of 0.69 to 0.86 in 2023 to 2026, against 0.18 to 0.53 for load alone. Replacing that renewables forecast with the day d−1 forecast available to the main models gives an operational proxy with correlations of 0.56 to 0.73. This descriptive comparison does not identify an accounting convention, the effect of forecast availability, or a model's expected MAE change.
 
 ![Price against residual load](reports/figures/merit_order.png)
 
-*Price against the residual load forecast, one panel per year. From `notebooks/01_exploratory_data_analysis.ipynb`.*
+*Observed price against retrospective target-day residual load, one panel per year. The line is the conditional median observed price in each 1 GW band, not an estimated supply curve. From `notebooks/01_exploratory_data_analysis.ipynb`.*
 
 ### 2.2 Benchmarks
 
@@ -108,7 +112,7 @@ Each tree has at most 31 leaves and at least 40 training hours per leaf, and is 
 
 ### 2.5 Variants
 
-Each variant changes one thing about a main model. In the papers' setup, `linear_papers` and `gbm_papers`, day d's renewables forecast $R_{d,h}$ replaces $R_{d-1,h}$. `gbm_defaults` uses scikit-learn's default learning rate, number of trees, minimum leaf size and L2 penalty, and keeps the absolute-error loss.
+Each variant changes one thing about a main model. In the papers' setup, `linear_papers` and `gbm_papers`, day d's renewables forecast $R_{d,h}$ replaces $R_{d-1,h}$. The resulting MAE comparison is a retrospective sensitivity to substituting forecasts for consecutive delivery days, not a same-day forecast-vintage comparison. `gbm_defaults` uses scikit-learn's default learning rate, number of trees, minimum leaf size and L2 penalty, and keeps the absolute-error loss.
 
 `linear_eua` and `gbm_eua` add the carbon price $C_{d-2}$ to the main models; in the linear model it is a seventeenth coefficient per hour, in EUR/MWh per EUR/t. They were set up as variants before they were run, so their result cannot choose the main models.
 
@@ -143,7 +147,7 @@ Lago et al. recommend the weekly naive for relative MAE, but here it is the weak
 
 ### 3.3 Significance tests
 
-A Diebold-Mariano test on daily MAE decides whether model A is more accurate than model B. With $\text{MAE}_d$ a model's MAE over the hours of day d, and $n$ days:
+A Diebold-Mariano (DM) test compares the predictive accuracy of model A and model B on daily MAE. The null hypothesis is equal expected daily MAE. With $\text{MAE}_d$ a model's MAE over the hours of day d and $n$ delivery days, define the loss difference as model B minus model A:
 
 ```math
 \begin{aligned}
@@ -153,7 +157,11 @@ A Diebold-Mariano test on daily MAE decides whether model A is more accurate tha
 \end{aligned}
 ```
 
-Here $\hat\gamma_k$ is the autocovariance of $\Delta_d$ at a lag of k days, and a large DM means A is more accurate. The plain test in Lago et al. uses $\hat\gamma_0$ alone; the Newey-West sum widens the standard error when consecutive days' errors move together, as they do in a volatile week. Every ordered pair of main models gets a one-sided test, and all significant differences survive a Bonferroni correction over the 6 pairs. Each variant is compared with its main model by a two-sided test.
+Positive $\Delta_d$ means model A has lower daily MAE. $\hat\gamma_k$ is the sample autocovariance of $\Delta_d$ at lag $k$, and the sum is a Newey–West heteroskedasticity and autocorrelation consistent (HAC) estimate with a Bartlett kernel and seven lags. Seven days is the retained primary bandwidth; the report also checks 14 and 28 lags as robustness diagnostics, without selecting a bandwidth from their p-values.
+
+Each DM test is two-sided because the direction of an accuracy difference is not fixed before observing the backtest. The p-value uses the standard-normal asymptotic approximation to the DM statistic. Its validity requires a sufficiently stable daily loss-difference process with weak enough dependence for the HAC estimate and central limit theorem to apply. The HAC estimate accommodates heteroskedasticity and autocorrelation of the form covered by those conditions; it does not make the test robust to arbitrary structural breaks or strong persistent dependence.
+
+There are two multiplicity families, each tested at 5%. The four main models make six unique unordered comparisons. Their six raw two-sided p-values receive Holm's step-down adjustment. The six variant-versus-main comparisons form a separate, exploratory family with their own Holm adjustment. Full-precision p-values are adjusted before reporting. The adjustment controls the family-wise error rate within each family, but it does not remove the limitation of choosing or evaluating variants on the same test period.
 
 ### 3.4 Differences from the reference papers
 
@@ -161,7 +169,7 @@ Here $\hat\gamma_k$ is the autocovariance of $\Delta_d$ at a lag of k days, and 
 
 | Choice | The papers | This project |
 |---|---|---|
-| Renewables forecast | For day d, treated as known on d−1 | For d−1; day d's in a variant |
+| Renewables forecast | For day d, treated as known on d−1 | Forecast for d−1 in the main models; forecast for d in the sensitivity variants |
 | Holidays | Weekday dummies only | A holiday dummy as well |
 | Training window | 730 days (Ziel and Weron); four windows from 56 days to 4 years, averaged (Lago et al.) | 365 days |
 | Linear model | LEAR, a LASSO model with many inputs (Lago et al.) | The expert model, by OLS |

@@ -3,8 +3,8 @@ from statistics import NormalDist
 import numpy as np
 import pandas as pd
 
-from pl_dayahead.evaluate import (BENCHMARK, common_hours, daily_mae, diebold_mariano, dm_table, format_p, mae_chart,
-                                  scores, to_markdown, variant_table)
+from pl_dayahead.evaluate import (BENCHMARK, available_variant_pairs, common_hours, daily_mae, diebold_mariano,
+                                  holm_adjust, main_comparison_table, mae_chart, scores, to_markdown, variant_table)
 
 
 def predictions() -> pd.DataFrame:
@@ -79,20 +79,23 @@ def test_a_clearly_better_model_is_significant():
     assert stat > 0 and p < 0.001
 
 
-def test_the_statistic_matches_a_hand_computed_example():
+def test_the_statistic_and_two_sided_p_value_match_a_hand_computed_example():
     # Daily differences 2, 0, 4, 2: mean 2, deviations 0, -2, 2, 0, and autocovariances, divided by the 4 days,
     # of 2 at lag 0 and -1 at lag 1. Newey-West with one lag: 2 + 2 x (1 - 1/2) x (-1) = 1, so DM = 2 / sqrt(1/4) = 4.
     # With no lags the variance is 2 and DM = 2 / sqrt(2/4) = 2 sqrt(2).
     daily = pd.DataFrame({"better": [10.0, 10.0, 10.0, 10.0], "worse": [12.0, 10.0, 14.0, 12.0]})
     statistic, p_value = diebold_mariano(daily, "better", "worse", lags=1)
     assert np.isclose(statistic, 4.0)
-    assert np.isclose(p_value, 1 - NormalDist().cdf(4.0))
+    assert np.isclose(p_value, 2 * (1 - NormalDist().cdf(4.0)))
     assert np.isclose(diebold_mariano(daily, "better", "worse", lags=0)[0], 2 * np.sqrt(2))
 
 
-def test_the_two_directions_add_up_to_one():
+def test_swapping_model_order_reverses_statistic_but_keeps_two_sided_p_value():
     daily = daily_mae(year_of_forecasts(0.01, seed=1), ["naive", "good"])
-    assert np.isclose(diebold_mariano(daily, "good", "naive")[1] + diebold_mariano(daily, "naive", "good")[1], 1.0)
+    stat_ab, p_ab = diebold_mariano(daily, "good", "naive")
+    stat_ba, p_ba = diebold_mariano(daily, "naive", "good")
+    assert np.isclose(stat_ab, -stat_ba)
+    assert np.isclose(p_ab, p_ba)
 
 
 def test_identical_forecasts_are_not_tested():
@@ -101,11 +104,34 @@ def test_identical_forecasts_are_not_tested():
     assert np.isnan(diebold_mariano(daily_mae(hours, ["naive", "copy"]), "copy", "naive")[1])
 
 
-def test_dm_table_layout():
-    table = dm_table(year_of_forecasts(0.2), ["good", "naive"])
-    assert table.loc["good", "naive"] < 0.001 and table.loc["naive", "good"] > 0.999
-    text = table.map(format_p)
-    assert text.loc["good", "good"] == "" and text.loc["good", "naive"] == "<0.001"
+def test_main_comparisons_contain_each_unique_pair_once():
+    rng = np.random.default_rng(12)
+    daily = pd.DataFrame({name: rng.normal(i, 1, 30) for i, name in enumerate("abcd")})
+    table = main_comparison_table(daily, list("abcd"))
+    pairs = list(zip(table["Model A"], table["Model B"]))
+    assert len(pairs) == 6
+    assert len(set(pairs)) == 6
+    assert pairs == [("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d")]
+
+
+def test_holm_step_down_adjustment_and_bounds():
+    raw = np.array([0.01, 0.04, 0.03, 0.8, 0.2, 0.7])
+    adjusted = holm_adjust(raw)
+    expected = np.array([0.06, 0.16, 0.15, 1.0, 0.6, 1.0])
+    assert np.allclose(adjusted, expected)
+    assert np.all((0 <= adjusted) & (adjusted <= 1))
+    # Ordered p-values must yield monotone Holm-adjusted values.
+    order = np.argsort(raw)
+    assert np.all(np.diff(adjusted[order]) >= 0)
+
+
+def test_main_pair_adjustment_preserves_raw_p_values_and_daily_effects():
+    hours = year_of_forecasts(0.2).rename(columns={"good": "gbm", "naive": "linear"})
+    daily = daily_mae(hours, ["gbm", "linear"])
+    table = main_comparison_table(daily, ["gbm", "linear"])
+    expected_p = diebold_mariano(daily, "gbm", "linear")[1]
+    assert np.isclose(table.loc[0, "Raw two-sided p-value"], expected_p)
+    assert np.isclose(table.loc[0, "Mean daily MAE difference (B − A)"], (daily.linear - daily.gbm).mean())
 
 
 def test_a_variant_against_its_base_model():
@@ -116,19 +142,50 @@ def test_a_variant_against_its_base_model():
     assert row["base"] == "gbm"
     assert np.isclose(row["difference"], mae["gbm_papers"] - mae["gbm"]) and row["difference"] < 0
     assert np.isclose(row["difference %"], 100 * row["difference"] / mae["gbm"])
-    assert row["p"] == "<0.001"
+    assert row["raw p-value"] < 0.001
+    assert row["Holm-adjusted p-value"] < 0.001
 
 
 def test_the_variant_p_value_is_two_sided():
     hours = year_of_forecasts(0.01, seed=1).rename(columns={"good": "gbm_papers", "naive": "gbm"})
-    one_sided = diebold_mariano(daily_mae(hours, ["gbm", "gbm_papers"]), "gbm_papers", "gbm")[1]
-    p_value = variant_table(hours, {"gbm_papers": "gbm"}).loc["gbm_papers", "p"]
-    assert p_value == format_p(2 * min(one_sided, 1 - one_sided))
+    daily = daily_mae(hours, ["gbm", "gbm_papers"])
+    p_value = diebold_mariano(daily, "gbm_papers", "gbm")[1]
+    row = variant_table(hours, {"gbm_papers": "gbm"}).loc["gbm_papers"]
+    assert np.isclose(row["raw p-value"], p_value)
+    assert np.isclose(row["Holm-adjusted p-value"], p_value)  # singleton family in this unit fixture
+    errors = hours[["gbm", "gbm_papers"]].sub(hours["actual"], axis=0).abs().mean()
+    assert np.isclose(row["difference"], errors.gbm_papers - errors.gbm)
+
+
+def test_variant_holm_adjustment_does_not_change_effect_or_raw_p_values():
+    hours = year_of_forecasts(0.02, seed=2).rename(columns={"good": "linear_papers", "naive": "linear"})
+    hours["linear_asinh"] = hours["actual"] + 0.9 * (hours["linear"] - hours["actual"])
+    hours["linear_eua"] = hours["actual"] + 1.01 * (hours["linear"] - hours["actual"])
+    variants = {"linear_papers": "linear", "linear_asinh": "linear", "linear_eua": "linear"}
+    table = variant_table(hours, variants)
+    daily = daily_mae(hours, list({name for pair in variants.items() for name in pair}))
+    for variant, base in variants.items():
+        row = table.loc[variant]
+        expected_raw = diebold_mariano(daily, variant, base)[1]
+        assert np.isclose(row["raw p-value"], expected_raw)
+        assert np.isclose(row["difference"],
+                          (hours[variant] - hours["actual"]).abs().mean()
+                          - (hours[base] - hours["actual"]).abs().mean())
+    assert np.all((table["Holm-adjusted p-value"] >= 0)
+                  & (table["Holm-adjusted p-value"] <= 1))
 
 
 def test_no_row_for_a_variant_run_without_its_base():
     hours = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers"})
     assert variant_table(hours, {"gbm_papers": "gbm"}).empty
+
+
+def test_available_variant_pairs_identifies_missing_registered_comparisons():
+    hours = year_of_forecasts(0.2).rename(columns={"good": "gbm_papers", "naive": "gbm"})
+    variants = {"gbm_papers": "gbm", "linear_papers": "linear"}
+    available, missing = available_variant_pairs(hours, variants)
+    assert available == [("gbm_papers", "gbm")]
+    assert missing == [("linear_papers", "linear")]
 
 
 def test_the_headline_chart_shows_each_mae_best_first_with_the_papers_setup_below_its_model():
