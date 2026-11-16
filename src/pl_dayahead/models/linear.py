@@ -14,7 +14,7 @@ Wednesday.
 
 The renewables input is wind plus solar for hour h of day d-1, the latest forecast published by
 11:00 on d-1. The papers' setup, LinearPapers, uses the forecast for day d instead, which is
-published at 18:00 on d-1, after the forecast is made. LinearCarbon adds the price of the latest
+assumed available at its 18:00 deadline on d-1, after the forecast is made. LinearCarbon adds the price of the latest
 EU emission allowance auction public at 11:00.
 
 In the hour-23 regression, the last price of the day before and the same-hour price are the same
@@ -88,10 +88,10 @@ class LinearByHour:
 
 
 class LinearPapers(LinearByHour):
-    """The papers' setup: uses the renewables forecast for the delivery day, published at 18:00 on d-1.
+    """The papers' setup: target-day renewables, assumed available at the 18:00 deadline on d-1.
 
-    That is after the 11:00 forecast, so this version could not have been run in time. Its gap to
-    the main version shows how much the papers' convention lowers the error.
+    Under that assumption the input is unavailable at 11:00. The comparison measures sensitivity
+    to substituting forecasts for different delivery days, not to revising the same day's forecast.
     """
 
     name = "linear_papers"

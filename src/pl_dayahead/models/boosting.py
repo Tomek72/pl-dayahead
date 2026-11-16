@@ -6,8 +6,8 @@ the same as the linear model's.
 
 The settings in PARAMS are fixed and the same in every run; GradientBoostingDefaults reruns the
 model with scikit-learn's defaults to show how much they matter. The model is trained on absolute
-error, the measure it is scored on. Trees cannot forecast a price outside the range of their training data;
-the linear model can. Lago et al. (2021) use a neural network as their nonlinear model; trees were
+error, the measure it is scored on. Tree predictions have limited extrapolation along input dimensions;
+the additive ensemble is not bounded by the training target range. Lago et al. (2021) use a neural network as their nonlinear model; trees were
 chosen because one fit takes about a second, which makes daily retraining practical.
 """
 
@@ -24,7 +24,7 @@ PARAMS = dict(
     learning_rate=0.05,
     max_iter=400,  # number of trees
     max_leaf_nodes=31,  # size of each tree
-    min_samples_leaf=40,  # every leaf averages at least 40 training hours
+    min_samples_leaf=40,  # minimum training observations per leaf
     l2_regularization=1.0,
     early_stopping=False,  # always the full 400 trees, so every run is identical
     random_state=0,
@@ -53,7 +53,7 @@ class GradientBoosting:
 
 
 class GradientBoostingPapers(GradientBoosting):
-    """The papers' setup: uses the renewables forecast for the delivery day, published at 18:00 on d-1."""
+    """Target-day substitution: renewables assumed available at the 18:00 deadline on d-1."""
 
     name = "gbm_papers"
     base = "gbm"

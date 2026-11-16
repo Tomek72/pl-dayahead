@@ -7,16 +7,22 @@ Run from the project root after downloading:
 
 Quarter-hour values are averaged into hours. An hour counts only if its values are all the same
 length and together cover 60 minutes; otherwise it is left empty. Wind is onshore plus offshore, with
-offshore counted as zero before its first forecast. Residual load (load minus wind and solar) is added
+offshore missing values counted as zero only before the fixed historical cutoff. Residual load (load minus wind and solar) is added
 for the merit-order notebook. Every hour appears as a row, so gaps show up as empty rows.
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from pl_dayahead import store
-from pl_dayahead.timeutils import ensure_utc
+from pl_dayahead.timeutils import delivery_day_bounds, ensure_utc
+
+# Existing project assumption, frozen independently of the data returned by a future download.
+# It is not evidence of the commissioning date; see METHODOLOGY.md section 1.2.
+OFFSHORE_ZERO_BEFORE = delivery_day_bounds(date(2026, 6, 18))[0]
 
 SERIES_COLUMNS = {  # downloaded series name -> column name in the hourly table
     "price_da": "price",
@@ -37,15 +43,26 @@ def build_hourly(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     report = {"ignored_series": sorted(set(raw["series"]) - set(SERIES_COLUMNS))}
 
     rows["ts_utc"] = ensure_utc(rows["ts_utc"])
+    if rows.empty:
+        raise ValueError("no recognised observations to stage")
+    if rows.duplicated(["series", "ts_utc"]).any():
+        raise ValueError("duplicate series/timestamp observations")
     rows["hour"] = rows["ts_utc"].dt.floor("h")
+    offset = (rows["ts_utc"] - rows["hour"]) / pd.Timedelta(minutes=1)
+    rows["valid_interval"] = (rows["resolution_min"].isin([15, 30, 60])
+                              & (offset % rows["resolution_min"] == 0)
+                              & (offset + rows["resolution_min"] <= 60)
+                              & rows["value"].notna()
+                              & ~rows["value"].isin([float("inf"), float("-inf")]))
     per_hour = rows.groupby(["series", "hour"]).agg(
         value=("value", "mean"),
         minutes=("resolution_min", "sum"),
         lengths=("resolution_min", "nunique"),
+        valid=("valid_interval", "all"),
     )
 
     # Keep an hour only if its values are all the same length and cover all 60 minutes.
-    complete = (per_hour["minutes"] == 60) & (per_hour["lengths"] == 1)
+    complete = (per_hour["minutes"] == 60) & (per_hour["lengths"] == 1) & per_hour["valid"]
     report["dropped_hours"] = per_hour.loc[~complete].groupby(level="series").size().to_dict()
     values = per_hour.loc[complete, "value"].unstack("series").rename(columns=SERIES_COLUMNS)
     for column in SERIES_COLUMNS.values():
@@ -53,12 +70,12 @@ def build_hourly(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             values[column] = float("nan")
 
     # One row per hour from the first to the last, so gaps are visible as empty rows.
-    hourly = values.reindex(pd.date_range(values.index.min(), values.index.max(), freq="h", name="ts_utc"))
+    hourly = values.reindex(pd.date_range(rows["hour"].min(), rows["hour"].max(), freq="h", name="ts_utc"))
 
-    # Offshore wind is zero before its first forecast: the farms did not exist yet.
+    # Missing offshore data after the fixed cutoff stays missing, even if the whole series is absent.
     first_offshore = hourly["wind_offshore_fcst"].first_valid_index()
-    before = hourly.index < first_offshore if first_offshore is not None else slice(None)
-    hourly.loc[before, "wind_offshore_fcst"] = 0.0
+    before = hourly.index < OFFSHORE_ZERO_BEFORE
+    hourly.loc[before, "wind_offshore_fcst"] = hourly.loc[before, "wind_offshore_fcst"].fillna(0.0)
 
     hourly["wind_fcst"] = hourly["wind_onshore_fcst"] + hourly["wind_offshore_fcst"]
     hourly["residual_load_fcst"] = hourly["load_fcst"] - hourly["wind_fcst"] - hourly["solar_fcst"]
@@ -94,8 +111,7 @@ def main() -> None:
     con.close()
 
     print(f"hourly: {report['n_hours']:,} hours, {report['first']} to {report['last']} (UTC)")
-    if report["first_offshore"] is not None:
-        print(f"offshore wind counted as zero before {report['first_offshore']}")
+    print(f"missing offshore wind counted as zero only before {OFFSHORE_ZERO_BEFORE} (historical assumption)")
     print("missing hours per column:")
     for column, count in report["missing"].items():
         print(f"  {column:20s} {count:6d}")

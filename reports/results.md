@@ -1,6 +1,6 @@
 # Backtest results
 
-MAE in EUR/MWh on 24,671 hours forecast by every model.
+MAE in EUR/MWh on 24,671 hours forecast by every stored registered model, 1 Jan 2024 to 24 Oct 2026. The common-sample restriction excludes 0 stored hours.
 
 ## Overall
 
@@ -93,7 +93,7 @@ MAE in EUR/MWh on 24,671 hours forecast by every model.
 
 ## Main-model Diebold-Mariano comparisons
 
-Two-sided tests of equal predictive accuracy on daily MAE over 1,028 days. Difference is Model B minus Model A in EUR/MWh; positive values favour Model A. The raw p-values use a Newey-West HAC standard error with 7 Bartlett lags; Holm adjustment covers the six unique pairs. Significance threshold: 5%. P-values are shown at full precision.
+Two-sided tests of equal predictive accuracy on daily MAE over 1,028 days. Difference is Model B minus Model A in EUR/MWh; positive values favour Model A. The raw p-values use a Newey-West HAC standard error with 7 Bartlett lags; Holm adjustment covers the 6 available unique pairs. Significance threshold: 5%. P-values are shown at full precision. Comparisons with fewer than two days or non-positive estimated variance are marked not testable. They remain in the adjustment family with p=1 internally; no test result is claimed for them.
 
 | Model A | Model B | Mean daily MAE difference (B − A) | Raw two-sided p-value | Holm-adjusted p-value | Significant after adjustment |
 |---|---|---|---|---|---|
@@ -106,7 +106,7 @@ Two-sided tests of equal predictive accuracy on daily MAE over 1,028 days. Diffe
 
 ## Exploratory variant comparisons
 
-Each variant changes one input or setting in its corresponding main model. The mean daily MAE difference is variant minus main model; negative values favour the variant. Two-sided DM p-values use the seven-lag HAC standard error. Holm adjustment is a separate family across 6 of 6 registered comparisons available in this report; significance threshold: 5%. These are secondary sensitivities. Multiplicity adjustment does not remove the limitations of selecting or evaluating variants on the same test period.
+Each variant changes one input or setting in its corresponding main model. The mean daily MAE difference is variant minus main model; negative values favour the variant. Two-sided DM p-values use the seven-lag HAC standard error. Holm adjustment is a separate family across 6 of 6 registered comparisons available in this report; significance threshold: 5%. These are secondary sensitivities. Multiplicity adjustment does not remove the limitations of selecting or evaluating variants on the same test period. Untestable comparisons follow the same convention as the main-model family.
 
 | variant | Corresponding main model | Mean daily MAE difference (variant − main) | Raw two-sided p-value | Holm-adjusted p-value | Significant after adjustment |
 |---|---|---|---|---|---|
@@ -119,7 +119,7 @@ Each variant changes one input or setting in its corresponding main model. The m
 
 ## HAC bandwidth robustness diagnostic
 
-Sample autocorrelations of the six main-model daily loss-difference series at lags 8–28 range from 0.057 to 0.119 for the pair-specific largest absolute coefficient shown below (signed values). The table reports two-sided raw p-values with Bartlett Newey-West bandwidths of 7, 14 and 28 days. This is a robustness diagnostic, not an additional testing family; the seven-lag specification remains primary. The table permits comparison of the raw p-values across bandwidths.
+Sample autocorrelations of the 6 available main-model daily loss-difference series at lags 8–28 range from 0.057 to 0.119 for the pair-specific largest absolute coefficient shown below (signed values). The table reports two-sided raw p-values with Bartlett Newey-West bandwidths of 7, 14 and 28 days. This is a robustness diagnostic, not an additional testing family; the seven-lag specification remains primary. The table permits comparison of the raw p-values across bandwidths.
 
 | Model A | Model B | Largest absolute ACF, lags 8–28 | Lag |
 |---|---|---|---|

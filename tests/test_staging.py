@@ -4,6 +4,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from pl_dayahead.staging import build_hourly
 from pl_dayahead.timeutils import delivery_index
@@ -79,16 +80,41 @@ def test_missing_hour_appears_as_a_row():
     assert report["missing"]["residual_load_fcst"] == 1  # residual load needs load
 
 
-def test_offshore_zero_before_its_first_forecast_and_missing_after():
-    raw = pd.concat([full_day(date(2026, 6, 16)).query("series != 'wind_offshore_da_fcst'"),
-                     full_day(date(2026, 6, 17), wind_offshore_da_fcst=800.0)])
-    later = pd.Timestamp("2026-06-17 05:00", tz="UTC")
+def test_offshore_zero_before_fixed_cutoff_and_missing_after():
+    raw = pd.concat([full_day(date(2026, 6, 17)).query("series != 'wind_offshore_da_fcst'"),
+                     full_day(date(2026, 6, 18), wind_offshore_da_fcst=800.0)])
+    later = pd.Timestamp("2026-06-18 05:00", tz="UTC")
     raw = raw[~((raw["series"] == "wind_offshore_da_fcst") & (raw["ts_utc"] == later))]
     hourly, report = build_hourly(raw)
-    first_day = hourly["ts_utc"] < pd.Timestamp("2026-06-16 22:00", tz="UTC")
+    first_day = hourly["ts_utc"] < pd.Timestamp("2026-06-17 22:00", tz="UTC")
     assert (hourly.loc[first_day, "wind_fcst"] == 5000.0).all()  # onshore only
     assert hourly.loc[hourly["ts_utc"] == later, "wind_fcst"].isna().all()
     assert report["missing"]["wind_fcst"] == 1
+
+
+def test_entirely_missing_offshore_after_cutoff_is_not_zero():
+    raw = full_day(date(2026, 7, 1)).query("series != 'wind_offshore_da_fcst'")
+    hourly, _ = build_hourly(raw)
+    assert hourly.wind_offshore_fcst.isna().all()
+    assert hourly.wind_fcst.isna().all()
+
+
+def test_observed_offshore_before_cutoff_is_preserved():
+    hourly, _ = build_hourly(full_day(date(2026, 6, 1), wind_offshore_da_fcst=50.0))
+    assert (hourly.wind_offshore_fcst == 50).all()
+
+
+def test_misaligned_intervals_do_not_cover_an_hour():
+    raw = full_day(date(2026, 1, 15), "15min")
+    raw.loc[raw.series == 'price_da', 'ts_utc'] += pd.Timedelta(minutes=5)
+    hourly, _ = build_hourly(raw)
+    assert hourly.price.isna().all()
+
+
+def test_duplicate_intervals_are_rejected():
+    raw = full_day(date(2026, 1, 15))
+    with pytest.raises(ValueError, match="duplicate"):
+        build_hourly(pd.concat([raw, raw.iloc[:1]]))
 
 
 def test_residual_load_is_load_minus_wind_minus_solar():

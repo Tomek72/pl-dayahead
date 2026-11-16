@@ -1,6 +1,6 @@
 # Methodology
 
-This document gives the details behind the [README](README.md): the data and when each series is published, the models, and how the forecasts are evaluated. The method follows three reference papers, Lago et al. (2021), Ziel and Weron (2018) and Maciejowska, Uniejewski and Weron (2022), referred to below as the papers.
+This document details the data, timing assumptions, models and evaluation behind the [README](README.md). The method follows Lago et al. (2021), Ziel and Weron (2018) and Maciejowska, Uniejewski and Weron (2022), referred to below as the papers.
 
 The forecast is issued at 11:00 Warsaw time on d−1, one hour before the auction for delivery day d closes. Its target is the price $p_{d,h}$ of each hour h of day d on the Warsaw clock. Since October 2025 that is the mean of the hour's four quarter-hour prices, so the target means the same thing across the whole period. A delivery day has 23 hours on the spring clock change and 25 on the autumn one.
 
@@ -8,13 +8,15 @@ The forecast is issued at 11:00 Warsaw time on d−1, one hour before the auctio
 
 ### 1.1 Sources and processing
 
-The electricity data comes from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for the Polish bidding zone: day-ahead prices (12.1.D), the day-ahead total load forecast (6.1.B) and the day-ahead wind and solar generation forecast (14.1.D), with wind onshore plus offshore. It starts on 1 January 2023, which keeps the 2022 gas crisis out of training and leaves one full year before the first test day. The day-ahead prices of Germany-Luxembourg and Czechia, from the same source, serve only the check of market coupling in notebook 02.
+The electricity data comes from the [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/) for the Polish bidding zone: day-ahead prices (12.1.D), the day-ahead total load forecast (6.1.B) and the day-ahead wind and solar generation forecast (14.1.D), with wind onshore plus offshore. It starts on 1 January 2023, which keeps the 2022 gas crisis out of training and leaves one full year before the first test day. Prices for Germany-Luxembourg and Czechia, from the same source, are used only for the same-hour price comparisons in notebook 02.
 
 More precisely, `ingest/entsoe.py` calls the ENTSO-E REST API for `documentType=A65`, `processType=A01` and `outBiddingZone_Domain=10YPL-AREA-----S` for `load_da_fcst`; the [API guide](https://transparency.entsoe.eu/content/static_content/download?path=%2FStatic+content%2Fweb+api%2FRestfulAPI_IG.pdf) maps that request to Article 6(1)(b), day-ahead total load. It calls `documentType=A69`, `processType=A01` and `in_Domain=10YPL-AREA-----S` for the wind-and-solar forecast under Article 14(1)(d), without a production-type filter. The response's Solar (B16), Wind Onshore (B19) and Wind Offshore (B18) series are stored separately; staging adds the two wind series and leaves solar separate. No actual load or actual solar-generation series is ingested or used in notebook 01.
 
 The legal definition of [total load in Article 2(27)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:02013R0543-20200101) is a balance quantity—generation plus imports, less exports and power used for storage, including losses—not a definition of gross end-user consumption. Article 14(1)(d) requires a wind-and-solar generation forecast per bidding zone, but neither the Regulation nor the API guide specifies whether PSE's A69 forecast estimates low-voltage/prosumer PV, its self-consumption, or a particular metering population. PSE's [separate five-year planning report](https://www.pse.pl/dane-systemowe/plany-pracy-kse/plan-koordynacyjny-5-letni/wielkosci-podstawowe/opis) currently forecasts total PV generation and deducts a PV autogeneration estimate based on low-voltage prosumer capacity from its planned network demand. That documents PSE's planning convention, not the construction of the ENTSO-E A65/A69 series used here. No source found maps those products to one another or establishes their treatment over 2023–2026.
 
-Values are stored hourly. Quarter-hour values are averaged into hours, and an hour counts only if its values are all the same length and together cover 60 minutes; otherwise it is missing.
+Values are stored hourly. New downloads retain each XML period's declared resolution and point positions rather than inferring interval lengths from gaps. Fixed-block curves (A01) retain missing points; step curves (A03) repeat a supplied value only within its declared period, following the [ENTSO-E curve-type guide, sections 4.1 and 4.3](https://eepublicdownloads.entsoe.eu/clean-documents/EDI/Library/cim_based/Introduction_of_different_Timeseries_possibilities__curvetypes__with_ENTSO-E_electronic_document_v1.4.pdf). Unsupported units or curve types and conflicting observations are rejected. Quarter-hour values are averaged into hours only when distinct, aligned intervals of equal length cover all 60 minutes. Incomplete hours, including at the edges of the archive, remain missing.
+
+The October 2026 snapshot predates this ingestion safeguard and stores interval lengths inferred by the earlier downloader; its source XML was not retained. Rebuilding staging in memory with the stricter coverage checks reproduces all 33,431 stored hourly rows exactly. This validates their stored interval structure, but cannot retrospectively verify source metadata that was not archived.
 
 The carbon price comes from EEX, which runs the primary auctions of emission allowances (EUA) in the EU Emissions Trading System and publishes every result free of charge. It is the clearing price of each auction of general allowances, in EUR per tonne of CO2: 1,039 auctions from 10 January 2022 to 28 October 2026.
 
@@ -26,11 +28,13 @@ The forecast rests on three assumptions about the data:
 
 1. Each series is published exactly at its deadline under EU Regulation 543/2013, because ENTSO-E does not record when each value was published.
 2. The stored values are those that were public at the time. ENTSO-E can revise a value after publishing it, and the data is the version downloaded in October 2026.
-3. Offshore wind is zero before 18 June 2026, the first delivery day with an offshore forecast, because no Polish offshore farm is assumed to have fed the grid before then.
+3. Missing offshore forecasts are treated as zero only before the fixed cutoff of 18 June 2026, the first delivery day with an offshore forecast in the original snapshot. This retains the project's historical assumption, not a verified commissioning date. Observed values are preserved even before that cutoff; gaps from the cutoff onwards stay missing, including when an entire download lacks offshore data.
 
 The README's [table of publication times](README.md#the-forecasting-problem) shows what follows for each input at 11:00 on d−1.
 
-The papers give their models the wind and solar forecast for day d and treat it as known on d−1 (Lago et al. 2021). Under the legal publication-deadline assumption above, that forecast is due at 18:00 on d−1, after the 11:00 issue time. ENTSO-E does not provide the actual historical publication timestamps, so this is an assumption about availability, not a claim about when each forecast was observed to appear. The main models therefore use the forecast for d−1, assumed available by 11:00. The `linear_papers` and `gbm_papers` variants substitute the target delivery day's forecast for the preceding delivery day's forecast, following the papers. The experiment measures sensitivity to input substitution across different delivery days. It does not measure the value of a revised forecast for the same delivery day available at 11:00, and cannot establish the commercial value of such an update.
+The papers treat the wind and solar forecast for day d as known on d−1 (Lago et al. 2021). Under the deadline assumption, it is due at 18:00 on d−1, after the 11:00 issue time, so the main models use the forecast for d−1. Actual historical publication times are unavailable. The `linear_papers` and `gbm_papers` variants substitute the target delivery day's forecast for the preceding delivery day's forecast. This measures sensitivity to inputs for different delivery days, not the value of a revised forecast for the same delivery day available at 11:00. It cannot establish the commercial value of such an update.
+
+PSE publishes a separate forecast product in its [`pk5l-wp` report](https://api.raporty.pse.pl/api/pk5l-wp). By 02:30 Warsaw time on 11 November 2026, it held hourly forecasts for 12 November and later days. It keeps only the latest version of each hour, so it cannot supply the point-in-time history needed for this backtest. This product is distinct from the ENTSO-E inputs and is not evaluated here.
 
 An EUA auction's bidding window closes at 11:00, and EEX's reports for 2022 to 2026 time every general-allowance result between 11:00 and 11:04 on the auction day, so an auction held on d−1 is never public at 11:00. The carbon input is therefore the latest auction held on or before d−2. Auctions pause for up to four weeks over New Year, and the last price carries on until they resume.
 
@@ -62,7 +66,7 @@ Load and renewables are outside inputs. Their difference, load minus wind and so
 
 ![Price against residual load](reports/figures/merit_order.png)
 
-*Observed price against retrospective target-day residual load, one panel per year. The line is the conditional median observed price in each 1 GW band, not an estimated supply curve. From `notebooks/01_exploratory_data_analysis.ipynb`.*
+*Observed price against retrospective target-day residual load, one panel per year. The line is the conditional median observed price in each 1 GW band, not an estimated supply curve. The price axis shows the pooled 0.5th–99.5th percentiles; medians use all observations. From `notebooks/01_exploratory_data_analysis.ipynb`.*
 
 ### 2.2 Benchmarks
 
@@ -110,6 +114,8 @@ The trees are scikit-learn's `HistGradientBoostingRegressor`, one model for all 
 
 Each tree has at most 31 leaves and at least 40 training hours per leaf, and is grown to reduce the absolute error, the measure the model is scored on. With this loss each leaf's value is the median residual of its training hours, and the L2 penalty of 1.0 acts only on the choice of splits. The settings are fixed and the same in every run. Tuning them would need a validation period before the test, and the only data before the first test day is the year the first model trains on. Lago et al.'s nonlinear benchmark is a deep neural network. I use trees instead because a fit takes about a second, which makes daily retraining practical, and they need no architecture search.
 
+Boosted trees have limited extrapolation along input dimensions, but their additive predictions are not bounded by the training-price range. Both models under-forecast prices at 250 EUR/MWh and above in this backtest: bias is −92.9 EUR/MWh for the linear model and −104.6 for the trees. These bands are selected by realised price, so their errors alone do not establish the cause of the under-forecast.
+
 ### 2.5 Variants
 
 Each variant changes one thing about a main model. In the papers' setup, `linear_papers` and `gbm_papers`, day d's renewables forecast $R_{d,h}$ replaces $R_{d-1,h}$. The resulting MAE comparison is a retrospective sensitivity to substituting forecasts for consecutive delivery days, not a same-day forecast-vintage comparison. `gbm_defaults` uses scikit-learn's default learning rate, number of trees, minimum leaf size and L2 penalty, and keeps the absolute-error loss.
@@ -131,6 +137,8 @@ For each delivery day d from 1 January 2024, a fresh model is trained on the 365
 Retraining every day, as the papers do, gives each forecast the latest prices and the latest relationship between price, load and renewables. The 365-day window is the most the data allows on the first test day and lies within the range of Lago et al.'s windows; being fixed, it gives every forecast the same length of history, with each season in it once. Ziel and Weron use 730 days, and Lago et al. average the forecasts of four windows, from 56 days to 4 years.
 
 A training row with a missing input is dropped. A test hour with a missing input gets no forecast, and every model is scored on the 24,671 hours all of them forecast, so no model gains by skipping hard hours.
+
+The first linear and tree fits have 358 usable delivery days because the seven-day price lag is unavailable for 1–7 January 2023. The requested training window is still 365 calendar days. Evaluation rejects duplicate model/hour rows and conflicting actual prices across models, retains entirely missing models in the common-sample restriction, and reports excluded hours and missing registered models.
 
 ### 3.2 Accuracy measures
 
@@ -157,11 +165,13 @@ A Diebold-Mariano (DM) test compares the predictive accuracy of model A and mode
 \end{aligned}
 ```
 
-Positive $\Delta_d$ means model A has lower daily MAE. $\hat\gamma_k$ is the sample autocovariance of $\Delta_d$ at lag $k$, and the sum is a Newey–West heteroskedasticity and autocorrelation consistent (HAC) estimate with a Bartlett kernel and seven lags. Seven days is the retained primary bandwidth; the report also checks 14 and 28 lags as robustness diagnostics, without selecting a bandwidth from their p-values.
+Positive $\Delta_d$ means model A has lower daily MAE. $\hat\gamma_k$ is the sample autocovariance of $\Delta_d$ at lag $k$, and the sum is a Newey–West heteroskedasticity and autocorrelation consistent (HAC) estimate with a Bartlett kernel and seven lags. Seven days is the primary bandwidth; the report also checks 14 and 28 lags as robustness diagnostics, without selecting a bandwidth from their p-values.
 
 Each DM test is two-sided because the direction of an accuracy difference is not fixed before observing the backtest. The p-value uses the standard-normal asymptotic approximation to the DM statistic. Its validity requires a sufficiently stable daily loss-difference process with weak enough dependence for the HAC estimate and central limit theorem to apply. The HAC estimate accommodates heteroskedasticity and autocorrelation of the form covered by those conditions; it does not make the test robust to arbitrary structural breaks or strong persistent dependence.
 
 There are two multiplicity families, each tested at 5%. The four main models make six unique unordered comparisons. Their six raw two-sided p-values receive Holm's step-down adjustment. The six variant-versus-main comparisons form a separate, exploratory family with their own Holm adjustment. Full-precision p-values are adjusted before reporting. The adjustment controls the family-wise error rate within each family, but it does not remove the limitation of choosing or evaluating variants on the same test period.
+
+A comparison with fewer than two days or a non-positive estimated long-run variance is marked not testable. It stays in its family as p=1 for adjustment purposes, while its displayed raw and adjusted p-values remain unreported. Partial reports state their available comparison counts and missing models; the published sample contains all registered models.
 
 ### 3.4 Differences from the reference papers
 
@@ -177,6 +187,12 @@ There are two multiplicity families, each tested at 5%. The four main models mak
 | Nonlinear model | A deep neural network (Lago et al.) | Gradient-boosted trees |
 | Significance test | Diebold-Mariano | The same, with a Newey-West standard error |
 | Target since October 2025 | The papers predate 15-minute products | The mean of the four quarter-hours |
+
+### 3.5 Error diagnostics
+
+Notebook 02's analogue and centred-window checks are retrospective: they compare same-type days within 30 days before and after a date. The centred-window tight-day table excludes the ten worst days, so it describes that restricted sample only. Using an operational input does not make a rank based on future reference days available ex ante.
+
+A separate table ranks the peak operational residual-load proxy using only the preceding 60 calendar days of the same type (working day, or weekend/public holiday). It uses 2023 inputs to initialise the backtest, requires the full lookback span and at least 10 observed reference days, and retains all scored days regardless of their errors. The percentile is the percentage of reference values strictly below the target. Days at or above the 75th and 95th percentiles form the top-quarter and top-5% groups. Mean signed error, median signed error and counts are reported by year at the selected peak-proxy hour. This selection is ex ante under the same publication and vintage assumptions as the models; the performance summaries are descriptive retrospective evaluations, not a trading rule or a formal test of conditional bias.
 
 ## References
 

@@ -10,8 +10,7 @@ is known, so no model looks better by skipping hard hours.
 Metrics:
 
 * MAE, mean absolute error in EUR/MWh: the average size of the miss. It is used rather than
-  squared error so that a handful of extreme hours (spikes, deep negative prices) cannot
-  dominate the comparison.
+  squared error to reduce the influence of extreme hours (spikes, deep negative prices).
 * Relative MAE: a model's MAE divided by the benchmark's MAE on the same hours. The benchmark
   is the weekly naive forecast ("naive_weekly", see models/naive.py), as recommended by Lago et
   al. (2021). Below 1 means the model beats it; 0.8 means its errors are 20% smaller. Dividing
@@ -27,7 +26,7 @@ Only models registered in models/__init__.py are scored. Rows left in the predic
 by a model that no longer exists (an old name, say) are listed and ignored.
 
 Variants. Some registered models are variants of a main model (see models/__init__.py): the
-papers' setup, which uses the renewables forecast for day d, published at 18:00 on d-1, after the
+papers' setup, which uses the renewables forecast for day d, assumed available at its 18:00 deadline on d-1, after the
 issue time; two robustness checks; and the carbon variants, which add the price of the latest EU
 emission allowance auction public at 11:00. They are scored on the same hours as every other model
 but kept out of the main tables. A separate table compares each with its base model: the
@@ -44,8 +43,8 @@ errors differs from zero:
 2. Take the daily difference between the two models and test whether its average differs from
    zero, like a two-sided t-test on the differences.
 3. Consecutive days are also alike (a volatile week is volatile all week), so the standard
-   error uses a Newey-West correction over 7 days of lags. That makes the test stricter than
-   the plain version described in Lago et al. (2021).
+   error uses a Newey-West correction over 7 days of lags. Its effect on the standard error
+   depends on the autocovariances; it need not make every comparison more conservative.
 
 The daily mean absolute error is Lago et al.'s daily loss (the sum of absolute errors over the
 day's hours, the L1 norm) divided by the number of hours. Dividing every day by 24 leaves the
@@ -88,7 +87,17 @@ MODEL_LABELS = {"gbm": "Gradient-boosted trees", "linear": "Linear expert model"
 
 def common_hours(predictions: pd.DataFrame) -> pd.DataFrame:
     """One row per hour, one prediction column per model; only hours every model forecast."""
-    hours = predictions.pivot_table(index="ts_utc", columns="model", values="prediction", aggfunc="first")
+    if predictions.empty:
+        raise ValueError("no predictions to evaluate")
+    if predictions[["model", "ts_utc"]].isna().any().any():
+        raise ValueError("predictions require a model and timestamp")
+    if predictions.duplicated(["model", "ts_utc"]).any():
+        raise ValueError("duplicate model/hour predictions")
+    if predictions.groupby("ts_utc")["actual"].nunique(dropna=False).gt(1).any():
+        raise ValueError("actual prices disagree across models; rerun against a common data snapshot")
+    if predictions[["prediction", "actual"]].isin([np.inf, -np.inf]).any().any():
+        raise ValueError("non-finite prediction or actual price")
+    hours = predictions.pivot(index="ts_utc", columns="model", values="prediction").sort_index()
     actual = predictions.groupby("ts_utc")["actual"].first()
     hours = hours.join(actual).dropna()
     local = hours.index.tz_convert(LOCAL_TZ)
@@ -131,12 +140,14 @@ def diebold_mariano(daily: pd.DataFrame, model_a: str, model_b: str, lags: int =
     """Two-sided test of equal daily MAE; positive differences favour model A. Returns statistic and p-value."""
     difference = (daily[model_b] - daily[model_a]).to_numpy()  # positive when A has lower daily MAE
     days = len(difference)
+    if days < 2:
+        return math.nan, math.nan
     centred = difference - difference.mean()
     variance = centred @ centred / days
     for lag in range(1, min(lags, days - 1) + 1):  # Newey-West: add the covariance with `lag` days earlier
         variance += 2 * (1 - lag / (lags + 1)) * (centred[lag:] @ centred[:-lag]) / days
     if variance <= 0:
-        return math.nan, math.nan  # identical forecasts: nothing to test
+        return math.nan, math.nan  # zero/negative estimated variance: no valid asymptotic test
     statistic = difference.mean() / math.sqrt(variance / days)
     return statistic, math.erfc(abs(statistic) / math.sqrt(2))  # two-sided standard-normal tail probability
 
@@ -155,7 +166,16 @@ def holm_adjust(p_values: Sequence[float]) -> np.ndarray:
 
 def format_probability(p_value: float) -> str:
     """Round-trip representation of a full-precision probability for generated reports."""
-    return "" if math.isnan(p_value) else repr(float(p_value))
+    return "Not testable" if math.isnan(p_value) else repr(float(p_value))
+
+
+def adjust_test_family(p_values: Sequence[float]) -> np.ndarray:
+    """Keep untestable comparisons in the family as p=1 for adjustment, but report them as missing."""
+    raw = np.asarray(p_values, dtype=float)
+    missing = np.isnan(raw)
+    adjusted = holm_adjust(np.where(missing, 1.0, raw))
+    adjusted[missing] = np.nan
+    return adjusted
 
 
 def main_comparison_table(daily: pd.DataFrame, models: list[str], lags: int = DM_LAGS) -> pd.DataFrame:
@@ -169,8 +189,8 @@ def main_comparison_table(daily: pd.DataFrame, models: list[str], lags: int = DM
             "Mean daily MAE difference (B − A)": (daily[model_b] - daily[model_a]).mean(),
             "Raw two-sided p-value": p_raw,
         })
-    table = pd.DataFrame(rows)
-    adjusted = holm_adjust(table["Raw two-sided p-value"].to_numpy())
+    table = pd.DataFrame(rows, columns=["Model A", "Model B", "Mean daily MAE difference (B − A)", "Raw two-sided p-value"])
+    adjusted = adjust_test_family(table["Raw two-sided p-value"].to_numpy())
     table["Holm-adjusted p-value"] = adjusted
     table["Significant after adjustment"] = adjusted <= ALPHA
     return table
@@ -185,15 +205,15 @@ def autocorrelation_diagnostic(daily: pd.DataFrame, models: list[str], first_lag
         centred = difference - difference.mean()
         denominator = centred @ centred
         acf = np.array([(centred[lag:] @ centred[:-lag]) / denominator
-                        for lag in range(first_lag, min(last_lag, len(centred) - 1) + 1)])
-        max_position = int(np.argmax(np.abs(acf)))
+                        for lag in range(first_lag, min(last_lag, len(centred) - 1) + 1)]) if denominator > 0 else np.array([])
+        max_position = int(np.argmax(np.abs(acf))) if len(acf) else None
         rows.append({
             "Model A": model_a,
             "Model B": model_b,
-            "Largest absolute ACF, lags 8–28": acf[max_position],
-            "Lag": first_lag + max_position,
+            "Largest absolute ACF, lags 8–28": acf[max_position] if max_position is not None else np.nan,
+            "Lag": first_lag + max_position if max_position is not None else np.nan,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["Model A", "Model B", "Largest absolute ACF, lags 8–28", "Lag"])
 
 
 def bandwidth_sensitivity_table(daily: pd.DataFrame, models: list[str],
@@ -205,7 +225,7 @@ def bandwidth_sensitivity_table(daily: pd.DataFrame, models: list[str],
         for bandwidth in bandwidths:
             row[f"Raw p, {bandwidth} lags"] = diebold_mariano(daily, model_a, model_b, lags=bandwidth)[1]
         rows.append(row)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["Model A", "Model B", *[f"Raw p, {bandwidth} lags" for bandwidth in bandwidths]])
 
 
 def format_report_p_values(table: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
@@ -250,7 +270,7 @@ def variant_table(hours: pd.DataFrame, variants: dict[str, str], lags: int = DM_
                "mean daily MAE difference", "raw p-value"]
     table = pd.DataFrame(rows, columns=columns).set_index("variant")
     if not table.empty:
-        adjusted = holm_adjust(table["raw p-value"].to_numpy())
+        adjusted = adjust_test_family(table["raw p-value"].to_numpy())
         table["Holm-adjusted p-value"] = adjusted
         table["significant after adjustment"] = adjusted <= ALPHA
     return table
@@ -310,7 +330,7 @@ def mae_chart(hours: pd.DataFrame, models: list[str]) -> Figure:
 
 
 def main() -> None:
-    con = store.connect()
+    con = store.connect(read_only=True)
     predictions = con.sql("SELECT model, ts_utc, prediction, actual FROM predictions").df()
     con.close()
     unregistered = sorted(set(predictions["model"]) - set(MODELS))
@@ -320,7 +340,16 @@ def main() -> None:
 
     models = sorted(predictions["model"].unique(), key=lambda model: (model != BENCHMARK, model))
     hours = common_hours(predictions)  # every model, variants included, is scored on the same hours
+    if hours.empty:
+        raise ValueError("no common hours across all stored models; check missing forecasts and model coverage")
     main_models = [model for model in models if model not in VARIANTS]
+    if not main_models:
+        raise ValueError("no main-model predictions available")
+    missing_main = sorted(set(MODELS) - set(VARIANTS) - set(main_models))
+    coverage_note = (f" Missing registered main models: {', '.join(missing_main)}. This is a partial report."
+                     if missing_main else "")
+    excluded_hours = predictions["ts_utc"].nunique() - len(hours)
+    print(f"Common-sample restriction excludes {excluded_hours:,} stored hours.{coverage_note}")
     first, last = hours.index.min(), hours.index.max()
     print(f"{len(hours):,} hours forecast by every model ({', '.join(models)}), "
           f"{first.tz_convert(LOCAL_TZ):%Y-%m-%d} to {last.tz_convert(LOCAL_TZ):%Y-%m-%d}\n")
@@ -345,7 +374,7 @@ def main() -> None:
     daily_main = daily_mae(hours, ranked)
     day_count = len(daily_main)
     main_tests = main_comparison_table(daily_main, ranked)
-    print(f"Main-model two-sided Diebold-Mariano tests ({day_count:,} days; Holm-adjusted across six pairs)")
+    print(f"Main-model two-sided Diebold-Mariano tests ({day_count:,} days; Holm-adjusted across {len(main_tests)} pairs)")
     print(main_tests.to_string(index=False), "\n")
 
     available_variants, missing_variants = available_variant_pairs(hours, VARIANTS)
@@ -358,21 +387,27 @@ def main() -> None:
         print(f"warning: missing registered variant comparisons ({missing_text})\n")
 
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
-    body = [f"# Backtest results\n\nMAE in EUR/MWh on {len(hours):,} hours forecast by every model."]
+    body = [f"# Backtest results\n\nMAE in EUR/MWh on {len(hours):,} hours forecast by every stored registered model, "
+            f"{day_label(first.tz_convert(LOCAL_TZ), weekday=False)} to {day_label(last.tz_convert(LOCAL_TZ), weekday=False)}. "
+            f"The common-sample restriction excludes {excluded_hours:,} stored hours.{coverage_note}"]
     body += [f"## {title}\n\n{to_markdown(table)}" for title, table in sections.items()]
     main_report = format_report_p_values(main_tests, ["Raw two-sided p-value", "Holm-adjusted p-value"])
     main_report["Significant after adjustment"] = main_report["Significant after adjustment"].map({True: "Yes", False: "No"})
+    main_report.loc[main_tests["Raw two-sided p-value"].isna(), "Significant after adjustment"] = "Not testable"
     body += [f"## Main-model Diebold-Mariano comparisons\n\nTwo-sided tests of equal predictive accuracy on daily MAE over {day_count:,} days. "
              f"Difference is Model B minus Model A in EUR/MWh; positive values favour Model A. "
              f"The raw p-values use a Newey-West HAC standard error with {DM_LAGS} Bartlett lags; Holm adjustment "
-             f"covers the six unique pairs. Significance threshold: {ALPHA:.0%}. P-values are shown at full precision.\n\n{to_markdown(main_report, include_index=False)}"]
+             f"covers the {len(main_tests)} available unique pairs. Significance threshold: {ALPHA:.0%}. P-values are shown at full precision. "
+             "Comparisons with fewer than two days or non-positive estimated variance are marked not testable. "
+             "They remain in the adjustment family with p=1 internally; no test result is claimed for them.\n\n"
+             + (to_markdown(main_report, include_index=False) if len(main_tests) else "At least two main models are needed for a comparison.")]
     variant_intro = ("## Exploratory variant comparisons\n\nEach variant changes one input or setting in its corresponding main model. "
                      "The mean daily MAE difference is variant minus main model; negative values favour the variant. "
                      "Two-sided DM p-values use the seven-lag HAC standard error. Holm adjustment is a separate family "
                      f"across {len(available_variants)} of {len(VARIANTS)} registered comparisons available in this report; "
                      "significance threshold: 5%. "
                      "These are secondary sensitivities. Multiplicity adjustment does not remove the limitations of selecting "
-                     "or evaluating variants on the same test period.")
+                     "or evaluating variants on the same test period. Untestable comparisons follow the same convention as the main-model family.")
     if missing_variants:
         missing_text = ", ".join(f"`{variant}` versus `{base}`" for variant, base in missing_variants)
         variant_intro += (f" Missing registered comparisons: {missing_text}. The Holm adjustment covers only the "
@@ -389,6 +424,7 @@ def main() -> None:
         })
         variant_report["Significant after adjustment"] = variant_report["Significant after adjustment"].map(
             {True: "Yes", False: "No"})
+        variant_report.loc[variants["raw p-value"].isna(), "Significant after adjustment"] = "Not testable"
         variant_report = format_report_p_values(variant_report, ["Raw two-sided p-value", "Holm-adjusted p-value"])
         body += [variant_intro + "\n\n" + to_markdown(variant_report)]
     else:
@@ -398,7 +434,7 @@ def main() -> None:
     acf_report = acf_table.copy()
     acf_report["Largest absolute ACF, lags 8–28"] = acf_report["Largest absolute ACF, lags 8–28"].map(
         lambda value: f"{value:.3f}")
-    body += ["## HAC bandwidth robustness diagnostic\n\nSample autocorrelations of the six main-model daily loss-difference series at lags 8–28 range from "
+    body += [f"## HAC bandwidth robustness diagnostic\n\nSample autocorrelations of the {len(main_tests)} available main-model daily loss-difference series at lags 8–28 range from "
              f"{acf_table['Largest absolute ACF, lags 8–28'].abs().min():.3f} to "
              f"{acf_table['Largest absolute ACF, lags 8–28'].abs().max():.3f} for the pair-specific largest "
              "absolute coefficient shown below (signed values). The table reports two-sided raw p-values with Bartlett "
@@ -408,6 +444,9 @@ def main() -> None:
              + to_markdown(acf_report, include_index=False) + "\n\n"
              + to_markdown(format_report_p_values(bandwidth_table, list(bandwidth_table.columns[2:])),
                            include_index=False)]
+    if acf_table.empty or acf_table["Largest absolute ACF, lags 8–28"].isna().all():
+        body[-1] = ("## HAC bandwidth robustness diagnostic\n\nNo estimable autocorrelation diagnostic: "
+                    "at least two models, nine days and a non-constant loss difference are needed.")
     RESULTS.write_text("\n\n".join(body) + "\n")
     print(f"all tables written to {RESULTS.relative_to(PROJECT_ROOT)}")
 

@@ -53,13 +53,14 @@ SCHEMA = """
 """
 
 
-def connect(path: Path | str = DB_PATH) -> duckdb.DuckDBPyConnection:
-    """Open the database and create its tables if they do not exist yet. Pass ":memory:" for a temporary database in tests."""
-    if str(path) != ":memory:":
+def connect(path: Path | str = DB_PATH, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+    """Open the database; read-only callers do not create directories or tables. Use ":memory:" in tests."""
+    if not read_only and str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(path))
+    con = duckdb.connect(str(path), read_only=read_only)
     con.execute("SET TimeZone = 'UTC'")  # timestamps come back in UTC, never local time
-    con.execute(SCHEMA)
+    if not read_only:
+        con.execute(SCHEMA)
     return con
 
 

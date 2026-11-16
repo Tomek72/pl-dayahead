@@ -2,8 +2,9 @@ from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from pl_dayahead.evaluate import (BENCHMARK, available_variant_pairs, common_hours, daily_mae, diebold_mariano,
+from pl_dayahead.evaluate import (BENCHMARK, adjust_test_family, autocorrelation_diagnostic, available_variant_pairs, common_hours, daily_mae, diebold_mariano,
                                   holm_adjust, main_comparison_table, mae_chart, scores, to_markdown, variant_table)
 
 
@@ -21,6 +22,70 @@ def predictions() -> pd.DataFrame:
 def test_only_hours_every_model_forecast_are_scored():
     hours = common_hours(predictions())
     assert len(hours) == 5
+
+
+def test_conflicting_actual_prices_and_duplicate_predictions_are_rejected():
+    rows = predictions()
+    conflicting = rows.copy()
+    conflicting.loc[conflicting.model == "linear", "actual"] = 999
+    with pytest.raises(ValueError, match="actual prices disagree"):
+        common_hours(conflicting)
+    with pytest.raises(ValueError, match="duplicate"):
+        common_hours(pd.concat([rows, rows.iloc[:1]]))
+
+
+def test_all_missing_model_stays_in_common_sample():
+    rows = predictions()
+    rows.loc[rows.model == "linear", "prediction"] = np.nan
+    hours = common_hours(rows)
+    assert hours.empty and "linear" in hours
+
+
+def test_degenerate_comparisons_keep_family_size_without_claiming_significance():
+    adjusted = adjust_test_family([0.02, np.nan, 0.5])
+    assert adjusted[0] == 0.06 and np.isnan(adjusted[1]) and adjusted[2] == 1
+    daily = pd.DataFrame({"a": [1., 2., 3.], "b": [1., 2., 3.]})
+    table = main_comparison_table(daily, ["a", "b"])
+    assert np.isnan(table["Holm-adjusted p-value"].iloc[0])
+    assert not table["Significant after adjustment"].iloc[0]
+    assert autocorrelation_diagnostic(daily, ["a", "b"])["Lag"].isna().all()
+
+
+def test_single_model_and_short_samples_have_no_spurious_tests():
+    daily = pd.DataFrame({"a": [1.], "b": [2.]})
+    assert main_comparison_table(daily, ["a"]).empty
+    assert np.isnan(diebold_mariano(daily, "a", "b")[1])
+    assert autocorrelation_diagnostic(daily, ["a", "b"])["Lag"].isna().all()
+
+
+@pytest.mark.parametrize("names", [["linear"], ["linear", "gbm"], ["linear", "gbm", "linear_asinh"]])
+def test_partial_and_degenerate_reports_complete(tmp_path, monkeypatch, names):
+    import duckdb
+    import pl_dayahead.evaluate as evaluate
+    from pl_dayahead import store
+
+    path = tmp_path / "predictions.duckdb"
+    con = store.connect(path)
+    timestamps = pd.date_range("2025-01-01", periods=40, freq="D", tz="UTC")
+    rows = pd.concat([pd.DataFrame({"model": name, "ts_utc": timestamps, "actual": 100., "prediction": 101.,
+                                   "delivery_day": timestamps.date, "issue_time_utc": timestamps,
+                                   "trained_from": timestamps.date, "trained_to": timestamps.date,
+                                   "run_at": timestamps}) for name in names])
+    store.replace_predictions(con, rows)
+    con.close()
+    report = tmp_path / "results.md"
+    monkeypatch.setattr(evaluate.store, "connect", lambda **kwargs: duckdb.connect(str(path), read_only=True))
+    monkeypatch.setattr(evaluate, "RESULTS", report)
+    monkeypatch.setattr(evaluate, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(evaluate, "FIG_DIR", tmp_path)
+    monkeypatch.setattr(evaluate, "save", lambda *args: None)
+    evaluate.main()
+    text = report.read_text()
+    assert "partial report" in text and "Missing registered main models" in text
+    assert "0 available unique pairs" in text if len(names) == 1 else "1 available unique pairs" in text
+    assert "No estimable autocorrelation diagnostic" in text
+    if len(names) > 1:
+        assert "Not testable" in text
 
 
 def test_the_benchmark_is_the_weekly_naive():
